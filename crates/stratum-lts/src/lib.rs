@@ -35,6 +35,10 @@ use stratum_core::{canonicalize, step_labeled, Name, Proc};
 pub struct Transition {
     /// The `≡N`-canonical channel the `Comm` fired on.
     pub label: Name,
+    /// The `≡N`-canonical message transmitted by the `Comm` — the reified name
+    /// `⌜Q⌝` bound by the receiver. A first-class observation of the step, not
+    /// merely part of the target state.
+    pub message: Name,
     /// Index of the target state in the owning [`Lts`].
     pub target: usize,
 }
@@ -75,8 +79,8 @@ impl Lts {
         queue.push_back((0, start.clone()));
 
         while let Some((from, rep)) = queue.pop_front() {
-            for (label, reduct) in step_labeled(&rep) {
-                let key = canonicalize(&reduct);
+            for step in step_labeled(&rep) {
+                let key = canonicalize(&step.reduct);
                 let target = if let Some(&t) = index.get(&key) {
                     t
                 } else if states.len() >= max_states {
@@ -87,10 +91,14 @@ impl Lts {
                     index.insert(key.clone(), t);
                     states.push(key);
                     transitions.push(Vec::new());
-                    queue.push_back((t, reduct));
+                    queue.push_back((t, step.reduct));
                     t
                 };
-                transitions[from].push(Transition { label, target });
+                transitions[from].push(Transition {
+                    label: step.channel,
+                    message: step.message,
+                    target,
+                });
             }
         }
 
@@ -158,7 +166,7 @@ impl Lts {
                 out.push_str(&format!(
                     "  n{from} -> n{} [label=\"{}\"];\n",
                     t.target,
-                    escape(&format_name(&t.label)),
+                    escape(&format_edge(&t.label, &t.message)),
                 ));
             }
         }
@@ -169,6 +177,13 @@ impl Lts {
 
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// A compact edge rendering `channel⟨message⟩`: the firing channel together with
+/// the transmitted payload, kept readable by [`format_name`]'s compact quote
+/// notation (e.g. `@0⟨@0⟩`).
+fn format_edge(channel: &Name, message: &Name) -> String {
+    format!("{}⟨{}⟩", format_name(channel), format_name(message))
 }
 
 /// A compact surface rendering of a process for inspection/labels.

@@ -41,14 +41,21 @@ use crate::{project, Field};
 /// A finite **run** of the LTS (an outcome in the sample space `Ω`, §F11).
 ///
 /// It records the sequence of visited state indices (`states`, always beginning
-/// at the initial state) together with the `≡N`-canonical channel labels of the
-/// `Comm` steps taken between them. Hence `labels.len() == states.len() - 1`.
+/// at the initial state) together with the `≡N`-canonical channel labels *and*
+/// transmitted messages of the `Comm` steps taken between them. The two event
+/// vectors run in lock-step, so step `i` is the `(channel, message)` pair
+/// `(labels[i], messages[i])`, and
+/// `labels.len() == messages.len() == states.len() - 1`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Trace {
     /// The visited state indices, in order, starting at [`Lts::initial`].
     pub states: Vec<usize>,
     /// The firing-channel labels of the steps taken, one per transition.
     pub labels: Vec<Name>,
+    /// The transmitted messages (reified names `⌜Q⌝`) of the steps taken, one per
+    /// transition and parallel to [`labels`](Trace::labels): step `i` is the
+    /// `(channel, message)` event `(labels[i], messages[i])`.
+    pub messages: Vec<Name>,
 }
 
 impl Trace {
@@ -77,7 +84,8 @@ pub fn enumerate_traces(lts: &Lts, max_len: usize) -> Vec<Trace> {
     let mut out = Vec::new();
     let mut states = vec![lts.initial()];
     let mut labels: Vec<Name> = Vec::new();
-    dfs(lts, max_len, &mut states, &mut labels, &mut out);
+    let mut messages: Vec<Name> = Vec::new();
+    dfs(lts, max_len, &mut states, &mut labels, &mut messages, &mut out);
     out
 }
 
@@ -88,6 +96,7 @@ fn dfs(
     max_len: usize,
     states: &mut Vec<usize>,
     labels: &mut Vec<Name>,
+    messages: &mut Vec<Name>,
     out: &mut Vec<Trace>,
 ) {
     let cur = *states.last().expect("trace always has a current state");
@@ -95,13 +104,16 @@ fn dfs(
         out.push(Trace {
             states: states.clone(),
             labels: labels.clone(),
+            messages: messages.clone(),
         });
         return;
     }
     for t in lts.transitions(cur) {
         states.push(t.target);
         labels.push(t.label.clone());
-        dfs(lts, max_len, states, labels, out);
+        messages.push(t.message.clone());
+        dfs(lts, max_len, states, labels, messages, out);
+        messages.pop();
         labels.pop();
         states.pop();
     }

@@ -46,6 +46,6 @@ pub mod subst;
 pub mod term;
 
 pub use congruence::{canonicalize, canonicalize_name, name_equiv, structurally_congruent};
-pub use reduce::{is_normal_form, reachable, step, step_labeled};
+pub use reduce::{is_normal_form, reachable, step, step_labeled, Step};
 pub use subst::{subst_semantic, subst_syntactic};
 pub use term::{drop_, fresh_sym, input, lift, output, par, quote, zero, Name, Proc};

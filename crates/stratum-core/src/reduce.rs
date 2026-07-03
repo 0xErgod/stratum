@@ -34,6 +34,25 @@ use crate::congruence::{canonicalize, canonicalize_name, name_equiv};
 use crate::subst::subst_semantic;
 use crate::term::{Name, Proc};
 
+/// A labelled one-step transition of the trace LTS, as produced by
+/// [`step_labeled`].
+///
+/// A `Comm` step `x0⟨|Q|⟩ | x1(y).P → P{⌜Q⌝/y}` is observed by *both* the
+/// channel it fired on and the message it transmitted. The message is exactly the
+/// reified name `⌜Q⌝` the receiver binds to `y` — a first-class trace event, not
+/// merely part of the successor state. Both [`channel`](Step::channel) and
+/// [`message`](Step::message) are `≡N`-canonical; the [`reduct`](Step::reduct) is
+/// nominal so it can be stepped again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Step {
+    /// The `≡N`-canonical channel the `Comm` fired on.
+    pub channel: Name,
+    /// The `≡N`-canonical message transmitted — the reified name `⌜Q⌝`.
+    pub message: Name,
+    /// The nominal successor process `P{⌜Q⌝/y}`.
+    pub reduct: Proc,
+}
+
 /// Flatten `p` into its active parallel components, dropping units `0` and
 /// splicing nested parallels (§2.3), without descending under any prefix.
 fn parallel_components(p: &Proc, out: &mut Vec<Proc>) {
@@ -48,15 +67,16 @@ fn parallel_components(p: &Proc, out: &mut Vec<Proc>) {
     }
 }
 
-/// Every Comm redex of `p`, as `(firing channel, reduct)` pairs, without
-/// deduplication.
+/// Every Comm redex of `p`, as `(firing channel, message ⌜Q⌝, reduct)` triples,
+/// without deduplication.
 ///
 /// A redex is a lift `x0⟨|Q|⟩` and an input `x1(y).P` among the active parallel
 /// components with `x0 ≡N x1`; it reduces to `P{⌜Q⌝/y}` (semantic substitution,
-/// §2.7), left in parallel with the untouched components. The firing channel is
-/// returned raw; callers wanting a stable label pass it through
+/// §2.7), left in parallel with the untouched components. The message `⌜Q⌝` is
+/// the reified name the receiver binds to `y`. The firing channel and message are
+/// returned raw; callers wanting stable labels pass them through
 /// [`canonicalize_name`]. Reducts are nominal.
-fn redexes(p: &Proc) -> Vec<(Name, Proc)> {
+fn redexes(p: &Proc) -> Vec<(Name, Name, Proc)> {
     let mut comps = Vec::new();
     parallel_components(p, &mut comps);
 
@@ -82,7 +102,9 @@ fn redexes(p: &Proc) -> Vec<(Name, Proc)> {
             }
 
             // P{⌜Q⌝/y}: bind the receiver's name to the reified lifted process.
-            let reduced = subst_semantic(body, *bound, &Name::Quote(q.clone()));
+            // That reified name ⌜Q⌝ is exactly the transmitted message.
+            let message = Name::Quote(q.clone());
+            let reduced = subst_semantic(body, *bound, &message);
 
             // Everything except the two reactants stays in parallel.
             let mut rest: Vec<Proc> = comps
@@ -92,7 +114,7 @@ fn redexes(p: &Proc) -> Vec<(Name, Proc)> {
                 .map(|(_, c)| c.clone())
                 .collect();
             rest.push(reduced);
-            out.push((x0.clone(), Proc::Par(rest)));
+            out.push((x0.clone(), message, Proc::Par(rest)));
         }
     }
     out
@@ -105,7 +127,7 @@ fn redexes(p: &Proc) -> Vec<(Name, Proc)> {
 pub fn step(p: &Proc) -> Vec<Proc> {
     let mut succ = Vec::new();
     let mut seen = HashSet::new();
-    for (_label, cand) in redexes(p) {
+    for (_label, _message, cand) in redexes(p) {
         if seen.insert(canonicalize(&cand)) {
             succ.push(cand);
         }
@@ -113,19 +135,26 @@ pub fn step(p: &Proc) -> Vec<Proc> {
     succ
 }
 
-/// All one-step transitions of `p`, as `(canonical firing channel, reduct)`
-/// pairs, deduplicated up to `≡` on both label and target.
+/// All one-step transitions of `p` as [`Step`]s — `(canonical firing channel,
+/// canonical message ⌜Q⌝, reduct)` — deduplicated up to `≡` on channel, message,
+/// and target.
 ///
-/// This is the edge relation of the trace LTS: each pair is a labelled
-/// transition tagged with the `≡N`-canonical channel the Comm fired on. Reducts
-/// are nominal so they can be stepped again.
-pub fn step_labeled(p: &Proc) -> Vec<(Name, Proc)> {
+/// This is the edge relation of the trace LTS: each [`Step`] is a labelled
+/// transition tagged with the `≡N`-canonical channel the Comm fired on *and* the
+/// `≡N`-canonical message it transmitted (the reified name `⌜Q⌝` bound by the
+/// receiver). Reducts are nominal so they can be stepped again.
+pub fn step_labeled(p: &Proc) -> Vec<Step> {
     let mut succ = Vec::new();
     let mut seen = HashSet::new();
-    for (label, cand) in redexes(p) {
-        let label = canonicalize_name(&label);
-        if seen.insert((label.clone(), canonicalize(&cand))) {
-            succ.push((label, cand));
+    for (label, message, cand) in redexes(p) {
+        let channel = canonicalize_name(&label);
+        let message = canonicalize_name(&message);
+        if seen.insert((channel.clone(), message.clone(), canonicalize(&cand))) {
+            succ.push(Step {
+                channel,
+                message,
+                reduct: cand,
+            });
         }
     }
     succ
