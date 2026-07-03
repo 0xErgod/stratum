@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/stratum-core",
+    "crates/stratum-lts",
+    "crates/stratum-logic",
+    "crates/stratum-equiv",
+    "crates/stratum-field",
+    "crates/stratum-syntax",
+    "crates/stratum",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/thoughtfolio/stratum"
+
+# Stratum — an executable core for the πρσϕ-Formalism.
+#
+# `stratum-core` (milestone 1) is the process grain: the reflective higher-order
+# (ρ) calculus of Meredith & Radestock (ENTCS 141(5), 2005), used here as the
+# *closed* process theory that generates traces. Later crates add reduction,
+# the trace LTS, field measurability, and the temporal-logic checker.

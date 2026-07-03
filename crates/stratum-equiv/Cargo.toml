@@ -1,0 +1,11 @@
+[package]
+name = "stratum-equiv"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "N-barbed bisimulation and may-testing equivalence for ρ-calculus processes."
+
+[dependencies]
+stratum-core = { path = "../stratum-core" }
+stratum-lts = { path = "../stratum-lts" }

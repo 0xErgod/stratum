@@ -1,0 +1,35 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "stratum",
+      "camelcase": "Stratum",
+      "title": "Stratum ρ-calculus surface syntax",
+      "scope": "source.stratum",
+      "file-types": [
+        "rho"
+      ],
+      "injection-regex": "^stratum$"
+    }
+  ],
+  "metadata": {
+    "version": "0.0.0",
+    "license": "MIT OR Apache-2.0",
+    "description": "Surface syntax for the reflective higher-order (ρ) calculus.",
+    "authors": [
+      {
+        "name": "Stratum"
+      }
+    ]
+  },
+  "bindings": {
+    "c": true,
+    "go": false,
+    "node": false,
+    "python": false,
+    "rust": true,
+    "swift": false,
+    "kotlin": false,
+    "zig": false
+  }
+}

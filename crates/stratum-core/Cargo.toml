@@ -1,0 +1,12 @@
+[package]
+name = "stratum-core"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terms and structural congruence for the reflective higher-order (ρ) calculus."
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"

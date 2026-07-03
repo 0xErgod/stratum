@@ -1,0 +1,26 @@
+[package]
+name = "stratum-syntax"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Concrete surface syntax (a DSL) for reflective higher-order (ρ) calculus terms."
+
+[features]
+# Default is pure Rust: the hand-written recursive-descent parser needs no C
+# toolchain and no tree-sitter runtime.
+default = []
+# Opt-in tree-sitter Rust binding. Enabling this compiles the generated
+# `tree-sitter/src/parser.c` (a C toolchain is required only under this feature)
+# and exposes [`crate::tree_sitter_language`].
+tree-sitter = ["dep:tree-sitter", "dep:cc"]
+
+[dependencies]
+stratum-core = { path = "../stratum-core" }
+tree-sitter = { version = "0.25", optional = true }
+
+[build-dependencies]
+cc = { version = "1", optional = true }
+
+[dev-dependencies]
+proptest = "1"

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f772b5b7d7058911a503dd39ebd666fcecef6a8d7882552f46b6e3ef5399a7e7 # shrinks to p = Lift { chan: Quote(Par([Drop(Quote(Zero)), Zero])), arg: Zero }

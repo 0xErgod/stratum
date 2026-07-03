@@ -1,0 +1,15 @@
+[package]
+name = "stratum"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Stratum — umbrella crate: model, run, and verify ρ-calculus protocols end to end."
+
+[dependencies]
+stratum-core = { path = "../stratum-core" }
+stratum-syntax = { path = "../stratum-syntax" }
+stratum-lts = { path = "../stratum-lts" }
+stratum-logic = { path = "../stratum-logic" }
+stratum-equiv = { path = "../stratum-equiv" }
+stratum-field = { path = "../stratum-field" }

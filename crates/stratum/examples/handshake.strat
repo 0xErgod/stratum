@@ -1,0 +1,12 @@
+// A one-shot request/acknowledge handshake, in the Stratum surface syntax.
+//
+// `new` mints two distinct fresh channel names from nil (assigned in
+// declaration order): req = @0, ack = @(@0!(0)). It is name-generation, not
+// restriction — see `stratum expand` for the raw quoted-process term.
+//
+// The client sends a request on `req`; the server receives it (binding the
+// reply value `x`, unused here) and answers by emitting on `ack`.
+
+new req, ack
+
+req!(0) | req(x).ack!(0)

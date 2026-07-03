@@ -1,0 +1,148 @@
+================
+nil (0)
+================
+
+0
+
+---
+
+(source_file
+  (nil))
+
+================
+nil (keyword)
+================
+
+nil
+
+---
+
+(source_file
+  (nil))
+
+================
+lift of quoted zero
+================
+
+@0!(0)
+
+---
+
+(source_file
+  (lift
+    channel: (quote body: (nil))
+    arg: (nil)))
+
+================
+drop of quoted zero
+================
+
+*@0
+
+---
+
+(source_file
+  (drop
+    name: (quote body: (nil))))
+
+================
+input binding and drop
+================
+
+@0(y).*y
+
+---
+
+(source_file
+  (input
+    channel: (quote body: (nil))
+    bind: (identifier)
+    body: (drop name: (identifier))))
+
+================
+parallel of two
+================
+
+@0!(0) | @0(y).*y
+
+---
+
+(source_file
+  (parallel
+    left: (lift
+      channel: (quote body: (nil))
+      arg: (nil))
+    right: (input
+      channel: (quote body: (nil))
+      bind: (identifier)
+      body: (drop name: (identifier)))))
+
+================
+nested grouped continuation
+================
+
+@0(y).(*y | @0!(0))
+
+---
+
+(source_file
+  (input
+    channel: (quote body: (nil))
+    bind: (identifier)
+    body: (parens
+      (parallel
+        left: (drop name: (identifier))
+        right: (lift
+          channel: (quote body: (nil))
+          arg: (nil))))))
+
+================
+quote binds tighter than lift
+================
+
+@(@0!(0))!(0)
+
+---
+
+(source_file
+  (lift
+    channel: (quote body: (parens
+      (lift
+        channel: (quote body: (nil))
+        arg: (nil))))
+    arg: (nil)))
+
+================
+parallel is left-associative
+================
+
+@0!(0) | @0!(0) | @0!(0)
+
+---
+
+(source_file
+  (parallel
+    left: (parallel
+      left: (lift channel: (quote body: (nil)) arg: (nil))
+      right: (lift channel: (quote body: (nil)) arg: (nil)))
+    right: (lift channel: (quote body: (nil)) arg: (nil))))
+
+================
+comments and whitespace
+================
+
+@0!(0)  // a lift
+  |     // then parallel
+@0(y).*y
+
+---
+
+(source_file
+  (parallel
+    left: (lift channel: (quote body: (nil)) arg: (nil))
+    (comment)
+    (comment)
+    right: (input
+      channel: (quote body: (nil))
+      bind: (identifier)
+      body: (drop name: (identifier)))))

@@ -1,0 +1,184 @@
+================
+new: ground-name preamble
+================
+
+new req, ack
+req!(0) | req(x).ack!(0)
+
+---
+
+(source_file
+  (new
+    name: (identifier)
+    name: (identifier))
+  (parallel
+    left: (lift
+      channel: (identifier)
+      arg: (nil))
+    right: (input
+      channel: (identifier)
+      bind: (identifier)
+      body: (lift
+        channel: (identifier)
+        arg: (nil)))))
+
+================
+def: name alias
+================
+
+def z { @0 }
+z!(0)
+
+---
+
+(source_file
+  (def
+    name: (identifier)
+    body: (def_body
+      (quote body: (nil))))
+  (lift
+    channel: (identifier)
+    arg: (nil)))
+
+================
+def: process alias used twice
+================
+
+def hello { @0!(0) }
+hello | hello
+
+---
+
+(source_file
+  (def
+    name: (identifier)
+    body: (def_body
+      (lift channel: (quote body: (nil)) arg: (nil))))
+  (parallel
+    left: (use (identifier))
+    right: (use (identifier))))
+
+================
+def: parameterized macro
+================
+
+def par2(P) { P | P }
+par2(@0!(0))
+
+---
+
+(source_file
+  (def
+    name: (identifier)
+    params: (parameters param: (identifier))
+    body: (def_body
+      (parallel
+        left: (use (identifier))
+        right: (use (identifier)))))
+  (call
+    macro: (identifier)
+    arg: (lift channel: (quote body: (nil)) arg: (nil))))
+
+================
+def: macro with a local new (hygiene)
+================
+
+def selfchan(P) { new c c!(P) }
+selfchan(0) | selfchan(0)
+
+---
+
+(source_file
+  (def
+    name: (identifier)
+    params: (parameters param: (identifier))
+    body: (def_body
+      (new name: (identifier))
+      (lift
+        channel: (identifier)
+        arg: (use (identifier)))))
+  (parallel
+    left: (call macro: (identifier) arg: (nil))
+    right: (call macro: (identifier) arg: (nil))))
+
+================
+def: multi-parameter macro
+================
+
+def send(C, P) { C!(P) }
+send(@0, 0)
+
+---
+
+(source_file
+  (def
+    name: (identifier)
+    params: (parameters
+      param: (identifier)
+      param: (identifier))
+    body: (def_body
+      (lift
+        channel: (identifier)
+        arg: (use (identifier)))))
+  (call
+    macro: (identifier)
+    arg: (quote body: (nil))
+    arg: (nil)))
+
+================
+call: named arguments
+================
+
+def f(x, y) { x!(0) | y!(0) }
+f(x <- @0, y <- @(@0!(0)))
+
+---
+
+(source_file
+  (def
+    name: (identifier)
+    params: (parameters
+      param: (identifier)
+      param: (identifier))
+    body: (def_body
+      (parallel
+        left: (lift channel: (identifier) arg: (nil))
+        right: (lift channel: (identifier) arg: (nil)))))
+  (call
+    macro: (identifier)
+    arg: (named_argument
+      param: (identifier)
+      value: (quote body: (nil)))
+    arg: (named_argument
+      param: (identifier)
+      value: (quote body: (parens
+        (lift channel: (quote body: (nil)) arg: (nil)))))))
+
+================
+call: named arguments permuted
+================
+
+def f(x, y) { x!(0) | y!(0) }
+f(y <- @(@0!(0)), x <- @0)
+
+---
+
+(source_file
+  (def
+    name: (identifier)
+    params: (parameters
+      param: (identifier)
+      param: (identifier))
+    body: (def_body
+      (parallel
+        left: (lift channel: (identifier) arg: (nil))
+        right: (lift channel: (identifier) arg: (nil)))))
+  (call
+    macro: (identifier)
+    arg: (named_argument
+      param: (identifier)
+      value: (quote body: (parens
+        (lift channel: (quote body: (nil)) arg: (nil)))))
+    arg: (named_argument
+      param: (identifier)
+      value: (quote body: (nil)))))
