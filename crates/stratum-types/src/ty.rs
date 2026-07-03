@@ -103,4 +103,10 @@ impl Env {
     pub fn carried(&self, chan: &Name) -> Option<&Ty> {
         self.carried.get(&canonicalize_name(chan))
     }
+
+    /// Iterate the declared `(channel, carried type)` entries. Channel keys are
+    /// already `≡N`-canonical. Used by the checker's eager coherence pass.
+    pub fn entries(&self) -> impl Iterator<Item = (&Name, &Ty)> {
+        self.carried.iter()
+    }
 }

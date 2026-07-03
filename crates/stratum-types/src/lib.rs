@@ -33,8 +33,10 @@
 //! enforces): a receiver's expectation matches every sender on that channel, so
 //! no reduction of an accepted program ever delivers a message of the wrong
 //! shape — even when a received name is reused as a channel. To keep this sound,
-//! [`check`] rejects a context that contradicts a channel's own reflected code
-//! ([`TypeError::IncoherentSort`]). Subject reduction is *argued and tested on
+//! [`check`] eagerly validates the whole context up front and rejects any entry
+//! that contradicts a channel's own reflected code
+//! ([`TypeError::IncoherentSort`]), so acceptance is closed under reduction.
+//! Subject reduction is *argued and tested on
 //! concrete reductions*, not mechanized as a proof. See [`check`] for the rules,
 //! the precise guarantee, and the connection to `stratum-field` measurability (a
 //! channel's type bounds what an observer of the channel can learn).

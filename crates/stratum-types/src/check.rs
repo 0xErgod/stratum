@@ -44,10 +44,13 @@
 //!
 //! The guarantee is stated for a **coherent** sort context — one where Γ never
 //! contradicts a channel's own reflected code. Coherence is not a side
-//! obligation: [`check`] *enforces* it (a Γ that declares a channel-shaped name
-//! a carried type other than the one its code reflects is rejected with
-//! [`TypeError::IncoherentSort`]), precisely because an incoherent Γ is what
-//! would otherwise let a well-typed program reduce to an ill-typed one.
+//! obligation: [`check`] *enforces* it eagerly, validating **every** Γ entry
+//! before it walks the term (a Γ that declares a channel-shaped name a carried
+//! type other than the one its code reflects is rejected with
+//! [`TypeError::IncoherentSort`], regardless of where — even payload-only — the
+//! name appears). This is precisely because an incoherent Γ is what would
+//! otherwise let a well-typed program reduce to a checker-rejected one: a name
+//! sent only as a payload can be moved into channel position by a `Comm`.
 //!
 //! For an accepted (hence coherent) `P`: in every reduction of `P`, whenever a
 //! lift on a channel `x` meets an input on `x` (`≡N`), the transmitted name has
@@ -191,8 +194,39 @@ type Ctx = HashMap<u64, Ty>;
 /// assert!(check(&env, &p).is_ok());
 /// ```
 pub fn check(env: &Env, proc: &Proc) -> Result<(), TypeError> {
+    validate_env(env)?;
     let mut ctx = Ctx::new();
     check_proc(env, &mut ctx, proc)
+}
+
+/// **Eager coherence pass**: reject an incoherent Γ before walking the term.
+///
+/// For every declared channel whose quoted code is channel-shaped
+/// (`msg_type(⌜P⌝) = Chan(T_refl)`), reflection already fixes what it carries, so
+/// Γ *must* agree — otherwise the name could flow (as a payload) into a channel
+/// position under reduction and flip its carried type. Validating *all* entries
+/// up front, regardless of where the name appears syntactically, is what makes
+/// the "rejected up front" guarantee literal and closes coherence under
+/// reduction: any name flowing into a `Chan`-typed binding is channel-shaped, so
+/// reflection governs it consistently. Names whose code is not channel-shaped
+/// (e.g. `req = ⌜0⌝`, reflecting to `Nil` or an input-quote reflecting to
+/// `Proc`) place no constraint on Γ, which may assign them any carried type.
+fn validate_env(env: &Env) -> Result<(), TypeError> {
+    // Sort for a deterministic first error when several entries are incoherent.
+    let mut entries: Vec<(&Name, &Ty)> = env.entries().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, declared) in entries {
+        if let Ok(Ty::Chan(t_refl)) = msg_type(env, name) {
+            if *declared != *t_refl {
+                return Err(TypeError::IncoherentSort {
+                    chan: name.clone(),
+                    reflected: *t_refl,
+                    declared: declared.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_proc(env: &Env, ctx: &mut Ctx, proc: &Proc) -> Result<(), TypeError> {
@@ -391,7 +425,7 @@ fn fmt_proc(p: &Proc) -> String {
 mod tests {
     use super::*;
     use stratum_core::term::{drop_, input, lift, output, par, quote, zero};
-    use stratum_core::{step, Proc};
+    use stratum_core::{name_equiv, step, Proc};
 
     /// req = ⌜0⌝, the handshake request channel.
     fn req() -> Name {
@@ -561,6 +595,41 @@ mod tests {
                 assert_eq!(declared, Ty::chan(Ty::Nil));
             }
             other => panic!("expected IncoherentSort, got {other:?}"),
+        }
+    }
+
+    /// Residual-hole regression: an incoherent Γ entry on a name that appears
+    /// **only in payload position** must still be rejected *up front* by the
+    /// eager coherence pass — the `Comm` would otherwise move it into channel
+    /// position in the reduct and trip `IncoherentSort` there, breaking closure
+    /// under reduction. Γ = { req:Nil, x:Chan(Nil), ack:Chan(Nil) } with
+    /// `x = ⌜⌜0⌝(w).0⌝` (input-quote → reflects to `Proc`, so Γ may freely give
+    /// it `Chan(Nil)`) but `ack = ⌜⌜0⌝!(0)⌝` (channel-shaped, reflects carried
+    /// `Nil`, so `Chan(Nil)` is incoherent). `ack` occurs only as a payload in
+    /// `x!(req!(0)) | x(y).y!(0)`, so `channel_carries(ack)` is never reached.
+    #[test]
+    fn incoherent_payload_only_entry_is_rejected() {
+        let x = quote(input(quote(zero()), |_w| zero())); // ⌜⌜0⌝(w).0⌝, reflects Proc
+        let env = Env::new()
+            .with(req(), Ty::Nil)
+            .with(x.clone(), Ty::chan(Ty::Nil))
+            .with(ack(), Ty::chan(Ty::Nil)); // incoherent: ack reflects Nil
+                                             // x!( req!(0) ) | x(y). y!(0)   — ⌜req!(0)⌝ ≡N ack, only ever a payload.
+        let p = par([
+            lift(x.clone(), lift(req(), zero())),
+            input(x, |y| lift(y, zero())),
+        ]);
+        match check(&env, &p) {
+            Err(TypeError::IncoherentSort {
+                chan,
+                reflected,
+                declared,
+            }) => {
+                assert!(name_equiv(&chan, &ack()));
+                assert_eq!(reflected, Ty::Nil);
+                assert_eq!(declared, Ty::chan(Ty::Nil));
+            }
+            other => panic!("expected IncoherentSort (eager), got {other:?}"),
         }
     }
 
