@@ -1,5 +1,8 @@
 # Stratum
 
+[![CI](https://github.com/0xErgod/stratum/actions/workflows/ci.yml/badge.svg)](https://github.com/0xErgod/stratum/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 An executable core for the **πρσϕ-Formalism** — the computational movement of
 the PI-SIGFPT protocol-theory research arc. Stratum is the tool that makes the
 formalism *speakable*: a workbench for modelling protocols, running them to
@@ -63,6 +66,61 @@ transliteration of Meredith's notation with a pure-Rust recursive-descent parser
    weak (`≈N`) and strong — parameterized by an observation set, plus
    may-testing (`may_equivalent`). Bounded exploration reports `Inconclusive`
    on truncation and gives a distinguishing reason otherwise.
+
+## Quickstart
+
+Stratum runs the whole pipeline — surface syntax → core process → trace LTS →
+temporal verdicts — from a single `.strat` source. A one-shot request/acknowledge
+handshake (`crates/stratum/examples/handshake.strat`):
+
+```
+new req, ack
+
+req!(0) | req(x).ack!(0)
+```
+
+`new req, ack` mints two distinct fresh channel names from nil (`req = @0`,
+`ack = @(@0!(0))`) — name-generation, not restriction. The client sends a request
+on `req`; the server receives it (binding the reply value `x`, unused here) and
+answers by emitting on `ack`.
+
+Run the worked example:
+
+```sh
+cargo run -p stratum --example handshake
+```
+
+It parses the protocol, prints the `expand` raw-core transparency view (named
+channels desugared to the quoted-process names the calculus works with), builds
+the bounded trace LTS, and model-checks three temporal properties:
+
+```
+== protocol ==
+@0!(0) | @0(_).@(@0!(0))!(0)
+
+== expanded (raw core) ==
+@0!(0) | @0(v0).@(@0!(0))!(0)
+
+== trace LTS ==
+2 states, 1 transitions (truncated: false)
+
+  s0: @0(_).@(@0!(0))!(0) | @0!(0)
+  s1: @(@0!(0))!(0) [terminal]
+
+== properties ==
+  EF acked   (the request can be acknowledged)      : true
+  AF acked   (every run eventually acknowledges)    : true
+  AG ~acked  (it is never acknowledged) [expect: false] : false
+
+  witness to `acked`: 1 step(s), s0 -> [1]
+  counterexample to `AG ~acked`: reaches s1 in 1 step(s)
+```
+
+The LTS has two states: the initial parallel composition `s0` and the terminal
+state `s1` where the acknowledgement is pending. `EF acked` and `AF acked` both
+hold (the handshake can and always does acknowledge), while the safety invariant
+`AG ~acked` is false — the checker returns a one-step witness reaching `s1` and a
+matching counterexample.
 
 ## Build & test
 
