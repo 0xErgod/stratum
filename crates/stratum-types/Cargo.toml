@@ -1,0 +1,10 @@
+[package]
+name = "stratum-types"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Channel-sort / behavioral typing for the reflective higher-order (ρ) calculus."
+
+[dependencies]
+stratum-core = { path = "../stratum-core" }

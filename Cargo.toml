@@ -6,6 +6,7 @@ members = [
     "crates/stratum-logic",
     "crates/stratum-equiv",
     "crates/stratum-field",
+    "crates/stratum-types",
     "crates/stratum-syntax",
     "crates/stratum",
 ]

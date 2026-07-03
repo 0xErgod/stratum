@@ -13,3 +13,4 @@ stratum-lts = { path = "../stratum-lts" }
 stratum-logic = { path = "../stratum-logic" }
 stratum-equiv = { path = "../stratum-equiv" }
 stratum-field = { path = "../stratum-field" }
+stratum-types = { path = "../stratum-types" }
