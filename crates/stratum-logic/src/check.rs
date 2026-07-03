@@ -13,6 +13,20 @@
 //! field; see [`check_epistemic`]. The plain [`check`] uses an empty map, under
 //! which an undeclared agent is treated as omniscient (its field is discrete, so
 //! `K_A φ ≡ φ`).
+//!
+//! Fairness follows the same "supplied by the caller" design. Liveness (`AF`)
+//! over a concurrent system is only meaningful under a **fairness assumption**:
+//! the plain `af` counts an infinite run that forever starves an enabled action
+//! as a genuine counterexample, even when no real scheduler would. A [`Fairness`]
+//! condition is a *generalized-Büchi* set of constraints — each a state
+//! predicate (a [`Formula`]) that a *fair* infinite run must satisfy infinitely
+//! often. The fair operators [`Formula::FairEg`]/[`Formula::FairAf`] are then
+//! decided against that condition by [`check_fair`]/[`holds_fair`]. The core
+//! primitive is `fair_eg` — the set of states from which a fair path exists —
+//! computed by the standard Emerson–Lei nested fixpoint (see [`fair_eg_set`]);
+//! `fair_af(φ) = ¬ fair_eg(¬φ)`. Deadlocks are handled exactly as `eg`/`af`
+//! handle them: a fair path is infinite, so the fixpoint's `EX`-progress conjunct
+//! excludes terminal states with no successors.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -28,6 +42,58 @@ type StateSet = Vec<bool>;
 /// Per-agent information fields, keyed by agent name.
 pub type Agents = HashMap<String, Field>;
 
+/// A **fairness condition** as a generalized-Büchi set of constraints.
+///
+/// Each constraint is a state predicate expressed as a [`Formula`], in exactly
+/// the same vocabulary (atomic propositions, modalities, fixpoints, …) as every
+/// other property — chosen over a raw bit vector or an opaque `Fn(&Proc)->bool`
+/// so that fairness assumptions read like the rest of the logic, compose with
+/// the labelling, and are decided by the same `eval`. A fixed constraint set is
+/// a `Formula` list because constraints are *state* sets, not paths.
+///
+/// A run is **fair** iff it is infinite and, for every constraint `C`, it enters
+/// the set of states satisfying `C` infinitely often. Liveness verdicts under
+/// this condition are given by [`Formula::FairEg`]/[`Formula::FairAf`], decided
+/// by [`check_fair`]. With no constraints, every infinite run is fair, so
+/// `fair_eg`/`fair_af` coincide with `eg`/`af`-without-deadlock-vacuity (see
+/// [`fair_eg_set`]).
+///
+/// Mirrors the [`Agents`] pattern: caller-supplied data threaded into the
+/// checker, empty by default.
+#[derive(Clone, Debug, Default)]
+pub struct Fairness {
+    constraints: Vec<Formula>,
+}
+
+impl Fairness {
+    /// The empty fairness condition (no constraints): every infinite run is fair.
+    pub fn new() -> Self {
+        Fairness {
+            constraints: Vec::new(),
+        }
+    }
+
+    /// Add a fairness constraint — a state predicate that a fair run must satisfy
+    /// infinitely often — returning `self` for chaining.
+    #[must_use]
+    pub fn constrain(mut self, constraint: Formula) -> Self {
+        self.constraints.push(constraint);
+        self
+    }
+
+    /// Build a fairness condition from an iterator of constraint predicates.
+    pub fn from_constraints(constraints: impl IntoIterator<Item = Formula>) -> Self {
+        Fairness {
+            constraints: constraints.into_iter().collect(),
+        }
+    }
+
+    /// The constraint predicates of this condition.
+    pub fn constraints(&self) -> &[Formula] {
+        &self.constraints
+    }
+}
+
 fn full(n: usize) -> StateSet {
     vec![true; n]
 }
@@ -35,12 +101,14 @@ fn empty(n: usize) -> StateSet {
     vec![false; n]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval<L: Fn(&str, &Proc) -> bool>(
     lts: &Lts,
     f: &Formula,
     env: &mut HashMap<String, StateSet>,
     label: &L,
     agents: &Agents,
+    fairness: &Fairness,
 ) -> StateSet {
     let n = lts.num_states();
     match f {
@@ -49,17 +117,17 @@ fn eval<L: Fn(&str, &Proc) -> bool>(
         Formula::Prop(p) => (0..n).map(|i| label(p, lts.state(i))).collect(),
         Formula::NotProp(p) => (0..n).map(|i| !label(p, lts.state(i))).collect(),
         Formula::And(a, b) => {
-            let sa = eval(lts, a, env, label, agents);
-            let sb = eval(lts, b, env, label, agents);
+            let sa = eval(lts, a, env, label, agents, fairness);
+            let sb = eval(lts, b, env, label, agents, fairness);
             (0..n).map(|i| sa[i] && sb[i]).collect()
         }
         Formula::Or(a, b) => {
-            let sa = eval(lts, a, env, label, agents);
-            let sb = eval(lts, b, env, label, agents);
+            let sa = eval(lts, a, env, label, agents, fairness);
+            let sb = eval(lts, b, env, label, agents, fairness);
             (0..n).map(|i| sa[i] || sb[i]).collect()
         }
         Formula::Diamond(act, g) => {
-            let sg = eval(lts, g, env, label, agents);
+            let sg = eval(lts, g, env, label, agents, fairness);
             (0..n)
                 .map(|i| {
                     lts.transitions(i)
@@ -69,7 +137,7 @@ fn eval<L: Fn(&str, &Proc) -> bool>(
                 .collect()
         }
         Formula::Box(act, g) => {
-            let sg = eval(lts, g, env, label, agents);
+            let sg = eval(lts, g, env, label, agents, fairness);
             (0..n)
                 .map(|i| {
                     lts.transitions(i)
@@ -79,17 +147,118 @@ fn eval<L: Fn(&str, &Proc) -> bool>(
                 .collect()
         }
         Formula::Var(x) => env.get(x).cloned().unwrap_or_else(|| empty(n)),
-        Formula::Mu(x, g) => fixpoint(lts, x, g, env, label, agents, empty(n)),
-        Formula::Nu(x, g) => fixpoint(lts, x, g, env, label, agents, full(n)),
+        Formula::Mu(x, g) => fixpoint(lts, x, g, env, label, agents, fairness, empty(n)),
+        Formula::Nu(x, g) => fixpoint(lts, x, g, env, label, agents, fairness, full(n)),
         Formula::Knows(agent, g) => {
-            let sg = eval(lts, g, env, label, agents);
+            let sg = eval(lts, g, env, label, agents, fairness);
             epistemic(lts, agent, agents, &sg, Quant::All)
         }
         Formula::Possible(agent, g) => {
-            let sg = eval(lts, g, env, label, agents);
+            let sg = eval(lts, g, env, label, agents, fairness);
             epistemic(lts, agent, agents, &sg, Quant::Any)
         }
+        Formula::FairEg(g) => {
+            let sg = eval(lts, g, env, label, agents, fairness);
+            let cons = constraint_sets(lts, label, agents, fairness);
+            fair_eg_set(lts, &sg, &cons)
+        }
+        Formula::FairAf(g) => {
+            // fairAF φ = ¬ fairEG(¬φ): no fair path stays in ¬φ forever. Computed
+            // at the set level so no formula-level negation of `g` is needed.
+            let sg = eval(lts, g, env, label, agents, fairness);
+            let not_phi: StateSet = sg.iter().map(|&b| !b).collect();
+            let cons = constraint_sets(lts, label, agents, fairness);
+            let feg = fair_eg_set(lts, &not_phi, &cons);
+            feg.iter().map(|&b| !b).collect()
+        }
     }
+}
+
+/// Evaluate each fairness constraint to its state set. Constraints are closed
+/// state predicates, so they are evaluated in a fresh environment (they never
+/// reference the surrounding fixpoint variables).
+fn constraint_sets<L: Fn(&str, &Proc) -> bool>(
+    lts: &Lts,
+    label: &L,
+    agents: &Agents,
+    fairness: &Fairness,
+) -> Vec<StateSet> {
+    fairness
+        .constraints
+        .iter()
+        .map(|c| {
+            let mut cenv = HashMap::new();
+            eval(lts, c, &mut cenv, label, agents, fairness)
+        })
+        .collect()
+}
+
+/// `EX S` — the states with some successor in `S`.
+fn pre_exists(lts: &Lts, s: &StateSet) -> StateSet {
+    let n = lts.num_states();
+    (0..n)
+        .map(|i| lts.transitions(i).iter().any(|t| s[t.target]))
+        .collect()
+}
+
+/// The set of states from which some **fair path** exists that stays within
+/// `phi` throughout — i.e. `fairEG φ` under the generalized-Büchi condition
+/// whose constraints have state sets `constraints`.
+///
+/// This is the standard Emerson–Lei nested fixpoint:
+///
+/// ```text
+/// fairEG φ = νZ. φ ∧ EX Z ∧ ⋀_i EX( E[ Z U (Z ∧ C_i) ] )
+/// ```
+///
+/// The outer greatest fixpoint `Z` starts from `phi` and shrinks. Each iteration
+/// keeps a state only if, staying inside `Z` (hence inside `φ`), it can — in at
+/// least one step — reach a `C_i` state, for *every* constraint `C_i`; the inner
+/// `E[Z U (Z ∧ C_i)]` is a least fixpoint computing "reaches `Z ∧ C_i` along a
+/// `Z`-path". At the fixpoint every state of `Z` can revisit each `C_i`
+/// arbitrarily often while remaining in `φ`, which is exactly an infinite fair
+/// `φ`-path.
+///
+/// The `EX Z` conjunct is the implicit "visit `⊤` infinitely often" constraint:
+/// it forces at least one successor inside `Z`, so a **terminal/deadlock** state
+/// (no successors, hence no infinite path) is never fair — consistent with how
+/// `eg`/`af` use the `⟨Any⟩⊤` conjunct. With no constraints this conjunct is all
+/// that remains, so `fair_eg_set` degenerates to ordinary `EG`.
+fn fair_eg_set(lts: &Lts, phi: &StateSet, constraints: &[StateSet]) -> StateSet {
+    let n = lts.num_states();
+    let mut z = phi.clone();
+    loop {
+        // Implicit ⊤ constraint: a fair path is infinite, so require a successor
+        // inside Z. This is what makes deadlocks unfair.
+        let pe_z = pre_exists(lts, &z);
+        let mut acc: StateSet = (0..n).map(|i| z[i] && pe_z[i]).collect();
+
+        for c in constraints {
+            // target = Z ∧ C_i
+            let target: StateSet = (0..n).map(|i| z[i] && c[i]).collect();
+            // until = μY. target ∨ (Z ∧ EX Y): reach a target state along a Z-path.
+            let mut y = target.clone();
+            loop {
+                let pe = pre_exists(lts, &y);
+                let next: StateSet = (0..n).map(|i| target[i] || (z[i] && pe[i])).collect();
+                if next == y {
+                    break;
+                }
+                y = next;
+            }
+            // EX(until): make at least one step, then reach C_i staying in Z.
+            let ex = pre_exists(lts, &y);
+            for i in 0..n {
+                acc[i] = acc[i] && ex[i];
+            }
+        }
+
+        if acc == z {
+            break;
+        }
+        z = acc;
+    }
+    z
 }
 
 /// Universal (`Knows`) vs existential (`Possible`) quantification over an atom.
@@ -128,13 +297,14 @@ fn fixpoint<L: Fn(&str, &Proc) -> bool>(
     env: &mut HashMap<String, StateSet>,
     label: &L,
     agents: &Agents,
+    fairness: &Fairness,
     init: StateSet,
 ) -> StateSet {
     let saved = env.remove(x);
     let mut cur = init;
     loop {
         env.insert(x.to_string(), cur.clone());
-        let next = eval(lts, body, env, label, agents);
+        let next = eval(lts, body, env, label, agents, fairness);
         if next == cur {
             break;
         }
@@ -148,6 +318,19 @@ fn fixpoint<L: Fn(&str, &Proc) -> bool>(
 }
 
 /// The set of states satisfying `formula`, with per-agent fields for epistemic
+/// operators and a fairness condition for the fair operators.
+fn check_full<L: Fn(&str, &Proc) -> bool>(
+    lts: &Lts,
+    formula: &Formula,
+    label: &L,
+    agents: &Agents,
+    fairness: &Fairness,
+) -> Vec<bool> {
+    let mut env = HashMap::new();
+    eval(lts, formula, &mut env, label, agents, fairness)
+}
+
+/// The set of states satisfying `formula`, with per-agent fields for epistemic
 /// operators.
 pub fn check_epistemic<L: Fn(&str, &Proc) -> bool>(
     lts: &Lts,
@@ -155,13 +338,24 @@ pub fn check_epistemic<L: Fn(&str, &Proc) -> bool>(
     label: &L,
     agents: &Agents,
 ) -> Vec<bool> {
-    let mut env = HashMap::new();
-    eval(lts, formula, &mut env, label, agents)
+    check_full(lts, formula, label, agents, &Fairness::new())
+}
+
+/// The set of states satisfying `formula` under a fairness condition, used to
+/// decide the fair operators [`Formula::FairEg`]/[`Formula::FairAf`]. Non-fair
+/// operators behave exactly as under [`check`].
+pub fn check_fair<L: Fn(&str, &Proc) -> bool>(
+    lts: &Lts,
+    formula: &Formula,
+    label: &L,
+    fairness: &Fairness,
+) -> Vec<bool> {
+    check_full(lts, formula, label, &Agents::new(), fairness)
 }
 
 /// The set of states satisfying `formula` (no epistemic agents declared).
 pub fn check<L: Fn(&str, &Proc) -> bool>(lts: &Lts, formula: &Formula, label: &L) -> Vec<bool> {
-    check_epistemic(lts, formula, label, &Agents::new())
+    check_full(lts, formula, label, &Agents::new(), &Fairness::new())
 }
 
 /// Whether state `i` satisfies `formula`.
@@ -187,6 +381,19 @@ pub fn holds_epistemic<L: Fn(&str, &Proc) -> bool>(
     agents: &Agents,
 ) -> bool {
     check_epistemic(lts, formula, label, agents)[lts.initial()]
+}
+
+/// Whether the initial state satisfies `formula` under a fairness condition —
+/// the fairness-aware liveness verdict. A system that is live only under
+/// fairness has `holds_fair(fair_af(φ), fairness)` true while plain
+/// `holds(af(φ))` is false.
+pub fn holds_fair<L: Fn(&str, &Proc) -> bool>(
+    lts: &Lts,
+    formula: &Formula,
+    label: &L,
+    fairness: &Fairness,
+) -> bool {
+    check_fair(lts, formula, label, fairness)[lts.initial()]
 }
 
 /// A model-checking result together with whether it is *definitive*.
