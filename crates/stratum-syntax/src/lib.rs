@@ -121,9 +121,10 @@ mod parser;
 mod render;
 mod resolve;
 
-pub use render::to_source;
+pub use render::{to_source, to_source_folded};
 pub use stratum_core::{Name, Proc};
 
+use std::collections::HashMap;
 use std::fmt;
 
 /// An error produced while lexing or parsing surface syntax.
@@ -167,6 +168,85 @@ pub fn parse(src: &str) -> Result<Proc, ParseError> {
     let program = parser::Parser::new(toks).parse_file()?;
     resolve::check_acyclic(&program.defs, &program.decl_pos)?;
     resolve::Resolver::new(&program.defs).resolve_program(&program.program)
+}
+
+/// A readable-name dictionary: the *canonical* form of a name mapped back to the
+/// source identifier it was introduced under.
+///
+/// Produced by [`parse_with_aliases`] and consumed by [`to_source_folded`], this
+/// captures the `def`/`new` names of the parsed source so the term can be
+/// printed the way it was written. Keys are canonicalized with
+/// [`stratum_core::canonicalize_name`], so a lookup succeeds up to structural
+/// congruence regardless of how a matching name is spelled; use [`Aliases::get`]
+/// (which canonicalizes the query for you) rather than reaching for a raw key.
+#[derive(Clone, Debug, Default)]
+pub struct Aliases {
+    map: HashMap<Name, String>,
+}
+
+impl Aliases {
+    /// Wrap a map whose keys are already [`stratum_core::canonicalize_name`]d.
+    pub(crate) fn from_canonical_map(map: HashMap<Name, String>) -> Self {
+        Aliases { map }
+    }
+
+    /// The source identifier `name` folds to, if any.
+    ///
+    /// `name` is canonicalized before the lookup, so it need not be in canonical
+    /// form. Returns `None` when the name has no alias (e.g. a raw `@0` with no
+    /// `def`/`new` behind it, or an input-bound variable).
+    ///
+    /// ```
+    /// use stratum_syntax::parse_with_aliases;
+    /// use stratum_core::term::{quote, zero};
+    ///
+    /// let (_p, aliases) = parse_with_aliases("new req\nreq!(0)").unwrap();
+    /// assert_eq!(aliases.get(&quote(zero())), Some("req")); // @0 folds to `req`
+    /// ```
+    pub fn get(&self, name: &Name) -> Option<&str> {
+        self.map
+            .get(&stratum_core::canonicalize_name(name))
+            .map(String::as_str)
+    }
+
+    /// The number of distinct canonical names that fold to an identifier.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Whether no name folds to an alias (the source had no `def`/`new` names).
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+/// Parse a surface-syntax process, also returning its readable-name [`Aliases`].
+///
+/// Identical to [`parse`] for the returned [`Proc`] — the same closed term, with
+/// all sugar expanded — but additionally hands back the dictionary mapping each
+/// top-level `new` name and name-shaped `def` alias (canonically) to the source
+/// identifier it was written as. Pair it with [`to_source_folded`] to render the
+/// term the way it was written.
+///
+/// ```
+/// use stratum_syntax::{parse, parse_with_aliases, to_source_folded};
+/// use stratum_core::structurally_congruent;
+///
+/// let src = "new req, ack\nreq!(0) | req(x).ack!(0)";
+/// let (p, aliases) = parse_with_aliases(src).unwrap();
+/// // The process is exactly what `parse` yields.
+/// assert!(structurally_congruent(&p, &parse(src).unwrap()));
+/// // And it can be printed back with its source names.
+/// assert_eq!(to_source_folded(&p, &aliases), "req!(0) | req(v0).ack!(0)");
+/// ```
+pub fn parse_with_aliases(src: &str) -> Result<(Proc, Aliases), ParseError> {
+    let toks = lexer::lex(src)?;
+    let program = parser::Parser::new(toks).parse_file()?;
+    resolve::check_acyclic(&program.defs, &program.decl_pos)?;
+    let mut resolver = resolve::Resolver::new(&program.defs);
+    let proc = resolver.resolve_program(&program.program)?;
+    let aliases = Aliases::from_canonical_map(resolver.collect_aliases());
+    Ok((proc, aliases))
 }
 
 /// Parse a surface-syntax name into a [`Name`].
