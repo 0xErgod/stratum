@@ -28,9 +28,9 @@
 //!
 //! ## Algorithm
 //!
-//! Both bisimulations are decided by **partition refinement** over the
-//! disjoint-union reduction graph of the two explored processes
-//! (Kanellakis–Smolka / Paige–Tarjan relational coarsest partition). Because the
+//! Both bisimulations are decided by **relational coarsest-partition
+//! refinement** (Kanellakis–Smolka style: iterated signature refinement) over
+//! the disjoint-union reduction graph of the two explored processes. Because the
 //! current N-barbed semantics matches a move to a move purely by the relation on
 //! *targets* (labels are ignored) and existentially both ways, bisimilarity of
 //! the combined LTS is exactly the coarsest partition in which two states share
@@ -39,11 +39,14 @@
 //! land in the same block.
 //!
 //! * **Strong** (`~N`): edges are single reduction steps; the initial signature
-//!   is each state's [`strong_barbs`] set.
+//!   is each state's [`strong_barbs`] set. This is the case that improves on the
+//!   old cross-product fixpoint (see [`refine`] for the cost).
 //! * **Weak** (`≈N`): edges are the reflexive-transitive (τ*) *saturation* of
 //!   reduction; the initial signature is each state's weak-barb set (the union
 //!   of strong barbs over all τ*-reachable states). Refining strongly over the
-//!   saturated graph reproduces the paper's `≈N`.
+//!   saturated graph reproduces the paper's `≈N`. Note that saturation densifies
+//!   the edge set to O(n²), so the weak mode is *not* asymptotically cheaper than
+//!   the old procedure — the genuine asymptotic win is in the strong mode.
 //!
 //! The previous cross-product greatest-fixpoint decision procedure is retained
 //! (hidden) in [`naive`] as a reference oracle for differential testing.
@@ -235,6 +238,10 @@ fn bisimilar(p: &Proc, q: &Proc, observations: &[Name], bound: usize, mode: Mode
     if block[init1] == block[init2] {
         Verdict::Equivalent
     } else if sig[init1] != sig[init2] {
+        // Deliberate: for the strong relation this reports differing *strong*
+        // barbs (the mode's signature), not weak barbs as the old oracle did —
+        // the more accurate diagnostic for a strong distinction. Discriminant
+        // (Equivalent vs not) is unaffected.
         let kind = match mode {
             Mode::Strong => "strong",
             Mode::Weak => "weak",
@@ -266,6 +273,14 @@ fn dedup_targets(it: impl Iterator<Item = usize>) -> Vec<usize> {
 /// successor blocks. Splitting is monotone (blocks only ever subdivide), so the
 /// fixpoint is the coarsest partition stable under the reduction relation — the
 /// bisimulation on the combined LTS. Returns the block id of each node.
+///
+/// This is the plain Kanellakis–Smolka scheme: each round rebuilds a signature
+/// map for all `n` nodes, and there can be up to `n` rounds (one per split), so
+/// the cost is `O(rounds · Σdeg) = O(n · Σdeg)` — no `O(m log n)` Paige–Tarjan
+/// counter/three-way-split machinery here. It still beats the old ~`O(n⁴)`
+/// cross-product fixpoint for the *strong* relation, where `Σdeg` is the number
+/// of reduction steps; for the *weak* relation the τ*-saturated edge set is
+/// dense (`Σdeg = O(n²)`), so there is no asymptotic gain there.
 fn refine(n: usize, edges: &[Vec<usize>], sig: &[BTreeSet<Name>]) -> Vec<usize> {
     // Seed blocks from the barb signatures.
     let mut block = vec![0usize; n];

@@ -192,3 +192,48 @@ fn differential_obviously_distinct_barbs() {
         assert!(!new.is_equivalent());
     }
 }
+
+#[test]
+fn differential_weak_neq_strong_oracle() {
+    // Pin the strong≠weak discriminant against the *oracle* (not just the public
+    // path): `x!0` vs `a!0 | a(y).x!0` barb on `x` either immediately or after
+    // one internal τ. They are weakly Equivalent but strongly Distinguished, and
+    // the new procedure must agree with `naive` on both — so the oracle itself
+    // witnesses that the two modes diverge here.
+    let x = chan(0); // @0 — the sole observed channel
+    let a = chan(2); // an *unobserved* internal relay channel (not in `obs`)
+    let obs = [x.clone()]; // observe only `x`, so the relay on `a` is silent
+
+    let emits_now: Proc = lift(x.clone(), zero());
+    let emits_after_tau: Proc = par([
+        lift(a.clone(), zero()),
+        input(a.clone(), {
+            let x = x.clone();
+            move |_| lift(x.clone(), zero())
+        }),
+    ]);
+
+    // Weak: both procedures say Equivalent.
+    let new_w = weak_barbed_bisimilar(&emits_now, &emits_after_tau, &obs, 100);
+    let ora_w = naive::weak_barbed_bisimilar(&emits_now, &emits_after_tau, &obs, 100);
+    assert!(
+        agree(&new_w, &ora_w),
+        "weak: new={new_w:?} oracle={ora_w:?}"
+    );
+    assert!(
+        new_w.is_equivalent(),
+        "weak should be Equivalent: {new_w:?}"
+    );
+
+    // Strong: both procedures say Distinguished (the τ is a real difference).
+    let new_s = strong_barbed_bisimilar(&emits_now, &emits_after_tau, &obs, 100);
+    let ora_s = naive::strong_barbed_bisimilar(&emits_now, &emits_after_tau, &obs, 100);
+    assert!(
+        agree(&new_s, &ora_s),
+        "strong: new={new_s:?} oracle={ora_s:?}"
+    );
+    assert!(
+        !new_s.is_equivalent(),
+        "strong should be Distinguished: {new_s:?}"
+    );
+}
