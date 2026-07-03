@@ -16,15 +16,20 @@
     by computation, the 3 monoid cases reduced to AC facts about [norm_par]);
     the AC/sort crux [norm_par_comm]/[norm_par_assoc]/[norm_par_unit] (via the
     standard insertion-sort development [insert_perm]/[sort_perm]/[sort_sorted]/
-    [sorted_perm_unique], resting on the [pleb] order axioms); the completeness
+    [sorted_perm_unique], resting on the [pleb] order laws — now PROVED, see the
+    AXIOM BUDGET note below); the completeness
     side [canon_cong] -> [canon_complete] / [nequiv_complete]; [canon_idem]; and
     [ndepth_under_quote].
 
-    AXIOM BUDGET.  The ONLY axioms are the three [pleb] order laws
-    ([pleb_total]/[pleb_antisym]/[pleb_trans], below), which any concrete
-    instantiation of the [pleb] comparison must discharge.  `Print Assumptions`
-    on every theorem reports exactly these (plus the [pleb] Parameter itself) and
-    nothing else — in particular no unsanctioned axiom and no Admitted lemma.
+    AXIOM BUDGET — ZERO (as of Tier 3).  [pleb] is now a CONCRETE structural
+    comparator ([proc_compare], below), NOT an abstract [Parameter], and the three
+    order laws ([pleb_total]/[pleb_antisym]/[pleb_trans]) are PROVED of it ([Qed]),
+    not assumed.  `Print Assumptions` on every headline theorem — [canon_decides],
+    [step_sound], [step_complete], and the Tier-3 [reach_sound] — reports exactly
+    "Closed under the global context": NO axioms whatsoever (no [pleb] symbol, no
+    order assumptions), no unsanctioned axiom, no Admitted lemma.  (Historical
+    note: through Tier 2 the metatheory rested on the three [pleb] order laws as
+    axioms over an abstract [pleb] Parameter; Tier 3 discharged them.)
 
     MODELLING DECISIONS (mirror of SPEC.md; the Coq model and the Rust engine
     represent the SAME quotient):
@@ -47,16 +52,19 @@
       Assurance over the α/de-Bruijn conversion needs a separate model or the
       round-trip property test (SPEC S4); it is out of Tier-1 scope by design.
 
-    - [pleb] is an ABSTRACT total order, not tied to the Rust derived [Ord]
-      (variant order Zero<Input<Lift<Drop<Par, Quote<Var).  The RELATION decided
-      here — [canon p = canon q] — is invariant under the choice of total order on
-      components (equal iff the component multisets are permutations; this is
-      exactly what [sort_par_perm] establishes), so ≡ agrees with the Rust decision
-      regardless of which linear order instantiates [pleb].  CAVEAT: if any code
-      depends on the specific canonical REPRESENTATIVE (serialized/hashed canonical
-      forms crossing the Coq/Rust boundary, or LTS state identity in SPEC §F1),
-      [pleb] must be instantiated to Rust's [Ord] — an open obligation, not
-      discharged here.
+    - [pleb] is a CONCRETE total order ([proc_compare], a structural lexicographic
+      comparator with the three order laws PROVED), but is NOT tied to the Rust
+      derived [Ord] (variant order Zero<Input<Lift<Drop<Par, Quote<Var).  The
+      RELATION decided here — [canon p = canon q] — is invariant under the choice
+      of total order on components (equal iff the component multisets are
+      permutations; this is exactly what [sort_par_perm] establishes), so ≡ agrees
+      with the Rust decision regardless of which linear order [pleb] uses.  CAVEAT:
+      if any code depends on the specific canonical REPRESENTATIVE (serialized/
+      hashed canonical forms crossing the Coq/Rust boundary, or LTS state identity
+      in SPEC §F1), [proc_compare] must be aligned to Rust's [Ord] — an open
+      obligation, not discharged here (but no longer an axiom).  The differential
+      harness in `crates/stratum-core` accordingly compares canonical forms modulo
+      Par-component order.
 
     - ≡ absorbs ≡N at name positions.  [scong] is closed under [nequiv] wherever a
       name occurs (rules [sc_lift]/[sc_inp]/[sc_drop]); this matches the Rust
