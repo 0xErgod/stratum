@@ -129,15 +129,19 @@ impl SyncRule for NameEquiv {
 /// * **Bounded, terminating, and robust.** `synchronize(x0, x1)` is `true` iff,
 ///   exploring `P0 | P1` with the ordinary (default-rule) reducer to depth
 ///   [`bound`](Annihilation::bound):
-///     1. the exploration **settled** within the bound — every reduction
-///        sequence reached a normal form; no reducible state was left on the
-///        frontier and no non-terminating cycle was entered; **and**
+///     1. the exploration **settled** within the bound — judged over the
+///        *whole* discovered state set (not merely its final BFS frontier):
+///        every discovered state reaches a normal form along edges that stay
+///        within the discovered set, so no reduction sequence runs past the
+///        bound and no state sits on a non-terminating cycle; **and**
 ///     2. at least one such normal form is `0`, and **every** normal form is
 ///        `0`.
 ///
 ///   Condition (1) closes the truncation hole: a candidate with one run to `0`
-///   *and* another run still reducible at the bound (or divergent) is **not**
-///   accepted, because that other run's fate is unknown within the bound.
+///   *and* another run still reducible at the bound (or divergent — including a
+///   finite cycle *left behind* the frontier) is **not** accepted, because that
+///   other run's fate is unknown within the bound. See [`reachable_reporting`]
+///   for the whole-set settling check.
 ///   Condition (2) is *robust* annihilation — every settled reduction ends at
 ///   `0`. If either fails (no normal form reached, a reducible state remains, or
 ///   some normal form is non-`0`), the verdict is a conservative `false`.
@@ -186,11 +190,13 @@ impl SyncRule for Annihilation {
         // graph was left unresolved within the bound.
         let (states, truncated) = reachable_reporting(&candidate, self.bound);
 
-        // If exploration did not settle (a reducible state remained on the
-        // frontier, or a non-terminating cycle), we cannot certify robust
+        // If exploration did not settle — judged over the whole discovered set:
+        // some discovered state has an unexplored successor (budget exhausted)
+        // or lies on a non-terminating cycle — we cannot certify robust
         // annihilation: conservatively decline. This is what keeps `synchronize`
         // an honest UNDER-approximation — a candidate with one run to `0` but
-        // another run still live at the bound is not reported as annihilating.
+        // another run still live at the bound (anywhere in the graph, not only on
+        // the final frontier) is not reported as annihilating.
         if truncated {
             return false;
         }
@@ -365,16 +371,27 @@ pub fn reachable(start: &Proc, max_steps: usize) -> Vec<Proc> {
 /// unresolved.
 ///
 /// Returns `(states, truncated)` where `states` is exactly what [`reachable`]
-/// returns (canonical forms), and `truncated` is `true` iff some state on the
-/// final frontier still has a `Comm` redex. That covers both ways exploration
-/// can fail to settle: hitting the depth `max_steps` with reducible states still
-/// on the frontier, and converging on a cycle of already-seen states that never
-/// reach a normal form. `truncated == false` therefore certifies that every
-/// reduction sequence from `start` reached a normal form within the bound; this
-/// is what lets [`Annihilation`] soundly under-approximate annihilation.
+/// returns (canonical forms). `truncated` is computed over the **whole**
+/// discovered state set, independent of where any non-settling state landed in
+/// the breadth-first search: it is `true` iff the exploration failed to *settle*,
+/// where the discovered graph settles iff **every** discovered state reaches a
+/// normal form along edges that stay within the discovered set (see
+/// [`settled_within`]). A state fails to settle when one of its successors was
+/// never explored — the step budget was exhausted before it was reached — or
+/// when it lies on a non-terminating cycle of already-seen states (a self-loop
+/// or longer back-edge admitted by canonicalization and the `P|0 ≡ P` unit law).
 ///
-/// For the `max_steps == 0` base case the frontier is `{start}` itself, so a
-/// `start` already in normal form (e.g. `0`) is *not* truncated.
+/// This whole-set formulation closes a soundness gap in the earlier
+/// final-frontier-only check: a finite cycle *left behind* the frontier (dropped
+/// because a sibling branch advanced strictly deeper to a normal form) was never
+/// re-examined and so could be missed. Here every discovered state is judged, so
+/// its BFS position is irrelevant.
+///
+/// `truncated == false` therefore certifies that every reduction sequence from
+/// `start` reached a normal form within the bound; this is what lets
+/// [`Annihilation`] soundly under-approximate annihilation. For the
+/// `max_steps == 0` base case the discovered set is `{start}` itself, so a
+/// `start` already in normal form (e.g. `0`) settles and is *not* truncated.
 fn reachable_reporting(start: &Proc, max_steps: usize) -> (Vec<Proc>, bool) {
     let mut seen: HashSet<Proc> = HashSet::new();
     let mut states: Vec<Proc> = Vec::new();
@@ -401,9 +418,148 @@ fn reachable_reporting(start: &Proc, max_steps: usize) -> (Vec<Proc>, bool) {
         frontier = next;
     }
 
-    // The exploration is truncated iff some final-frontier state is still
-    // reducible: either we exhausted `max_steps` with live states remaining, or
-    // we stopped on states whose only successors were already seen (a cycle).
-    let truncated = frontier.iter().any(|p| !step(p).is_empty());
+    // Truncation is decided over the WHOLE discovered set, not just the final
+    // frontier: gather every discovered state's canonical successors and ask
+    // whether the induced graph fully settles. A successor outside the
+    // discovered set signals a budget-exhausted (un-expanded) state; a cycle of
+    // discovered states that never reaches a normal form signals divergence.
+    // Either leaves `settled_within` short of a full fixpoint, so `truncated`.
+    let succ_keys: Vec<Vec<Proc>> = states
+        .iter()
+        .map(|s| step(s).iter().map(canonicalize).collect())
+        .collect();
+    let truncated = !settled_within(&states, &succ_keys);
     (states, truncated)
+}
+
+/// Whether the discovered reduction graph is fully **settled** — i.e. every
+/// discovered state reaches a normal form along edges that stay within the
+/// discovered set. `states[i]`'s canonical successors are `succ_keys[i]`.
+///
+/// Computed as a least fixpoint over the entire discovered set, so the verdict
+/// is independent of BFS frontier position: a state settles iff every one of its
+/// successors was itself discovered (equals some `states[j]`) *and* settles, with
+/// a normal form (no successors) settling vacuously as the base case. A state
+/// never becomes settled when a successor was never explored (the step budget was
+/// exhausted before reaching it) or when it sits on a non-terminating cycle —
+/// both of which leave the fixpoint short of covering every state.
+///
+/// The exploration is *truncated* precisely when this returns `false`.
+fn settled_within(states: &[Proc], succ_keys: &[Vec<Proc>]) -> bool {
+    let index: std::collections::HashMap<&Proc, usize> =
+        states.iter().enumerate().map(|(i, s)| (s, i)).collect();
+
+    let mut settling = vec![false; states.len()];
+    loop {
+        let mut changed = false;
+        for (i, succ) in succ_keys.iter().enumerate() {
+            if settling[i] {
+                continue;
+            }
+            // Every successor must be a discovered, already-settling state.
+            let all_settle = succ
+                .iter()
+                .all(|k| matches!(index.get(k), Some(&j) if settling[j]));
+            if all_settle {
+                settling[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    settling.iter().all(|&b| b)
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    //! Whole-set truncation semantics of [`reachable_reporting`], pinned via its
+    //! extracted core [`settled_within`].
+    //!
+    //! A genuine `*x0 | *x1` candidate cannot exhibit the target defect through
+    //! the channel/annihilation machinery: a finite ρ self-loop would require a
+    //! `Comm` reduct that regenerates its own consumed *input* prefix, which
+    //! needs infinite syntax (the reviewer who filed #24 could not build one
+    //! either). We therefore pin the underlying settling semantics directly on
+    //! synthetic discovered graphs — including the exact shape the old
+    //! final-frontier-only check missed: a cycle *left behind* the frontier while
+    //! a sibling branch advanced deeper to a normal form.
+
+    use super::*;
+    use crate::term::{input, lift, quote, zero};
+
+    /// The discarded final-frontier-only predicate, kept here purely so the
+    /// regression can demonstrate that the *old* logic disagreed with the new
+    /// whole-set logic on the left-behind-cycle graph. It inspected only the
+    /// states on the final BFS frontier, reporting truncation iff one of them was
+    /// still reducible (had a non-empty successor list).
+    fn old_final_frontier_truncated(final_frontier_succ: &[Vec<Proc>]) -> bool {
+        final_frontier_succ.iter().any(|succ| !succ.is_empty())
+    }
+
+    /// A left-behind finite cycle: a fast branch reaches a normal form (which
+    /// ends up on the final frontier) while a self-looping state, discovered
+    /// earlier and dropped behind the frontier, never reaches a normal form.
+    ///
+    /// The old final-frontier-only check inspected only `{nf}` (irreducible) and
+    /// so reported settled (`truncated = false`) — the soundness gap. The
+    /// whole-set check judges every state and reports `truncated = true`.
+    #[test]
+    fn left_behind_cycle_is_truncated_by_whole_set_check() {
+        // Three structurally distinct canonical nodes (Input / Lift / Zero).
+        let start = canonicalize(&input(quote(zero()), |_| zero()));
+        let cycle = canonicalize(&lift(quote(zero()), zero()));
+        let nf = canonicalize(&zero());
+        assert_ne!(start, cycle);
+        assert_ne!(cycle, nf);
+        assert_ne!(start, nf);
+
+        // start → {cycle, nf};  cycle → {cycle} (self-loop);  nf → {}.
+        let states = vec![start, cycle.clone(), nf.clone()];
+        let succ_keys = vec![vec![cycle.clone(), nf.clone()], vec![cycle], vec![]];
+
+        // New whole-set logic: the self-loop never settles ⇒ truncated.
+        assert!(
+            !settled_within(&states, &succ_keys),
+            "whole-set check must report the left-behind cycle as truncated",
+        );
+
+        // Old logic saw only the final frontier {nf}, whose successor list is
+        // empty, so it wrongly reported settled (not truncated).
+        assert!(
+            !old_final_frontier_truncated(&[vec![]]),
+            "old final-frontier-only logic wrongly reports settled on this graph",
+        );
+    }
+
+    /// A fully closed, terminating graph settles (`truncated = false`): the base
+    /// case the `⌜0⌝ / ⌜0⌝` candidate relies on generalizes here.
+    #[test]
+    fn closed_terminating_graph_settles() {
+        let start = canonicalize(&input(quote(zero()), |_| zero()));
+        let nf = canonicalize(&zero());
+        assert_ne!(start, nf);
+
+        // Lone normal form.
+        assert!(settled_within(std::slice::from_ref(&nf), &[vec![]]));
+
+        // start → nf → {}.
+        let states = vec![start, nf.clone()];
+        let succ_keys = vec![vec![nf], vec![]];
+        assert!(settled_within(&states, &succ_keys));
+    }
+
+    /// A discovered state whose successor was never explored (budget exhausted)
+    /// does not settle — the ordinary depth-truncation case, now handled by the
+    /// same whole-set predicate.
+    #[test]
+    fn unexplored_successor_is_truncated() {
+        let start = canonicalize(&input(quote(zero()), |_| zero()));
+        let undiscovered = canonicalize(&zero());
+        assert_ne!(start, undiscovered);
+
+        // start → {undiscovered}, but `undiscovered` is absent from `states`.
+        assert!(!settled_within(&[start], &[vec![undiscovered]]));
+    }
 }
