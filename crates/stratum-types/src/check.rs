@@ -42,15 +42,28 @@
 //!
 //! # Intended guarantee (communication safety)
 //!
-//! If `Γ ⊢ P ok` then in every reduction of `P`, whenever a lift on a channel
-//! `x` meets an input on `x` (`≡N`), the transmitted name has exactly the type
-//! the receiver bound its variable at. Hence a receiver never uses a received
-//! name at a type its senders did not supply: no sender ever puts the "wrong
-//! shape" on a channel. In particular a channel declared to carry `Nil` only
-//! ever transmits `⌜0⌝`-typed messages. We do not mechanize subject reduction,
-//! but the unit tests exercise **preservation** on concrete reductions
-//! (including a substitution into a payload), which is the operational content
-//! of that guarantee.
+//! The guarantee is stated for a **coherent** sort context — one where Γ never
+//! contradicts a channel's own reflected code. Coherence is not a side
+//! obligation: [`check`] *enforces* it (a Γ that declares a channel-shaped name
+//! a carried type other than the one its code reflects is rejected with
+//! [`TypeError::IncoherentSort`]), precisely because an incoherent Γ is what
+//! would otherwise let a well-typed program reduce to an ill-typed one.
+//!
+//! For an accepted (hence coherent) `P`: in every reduction of `P`, whenever a
+//! lift on a channel `x` meets an input on `x` (`≡N`), the transmitted name has
+//! exactly the type the receiver bound its variable at — and this type is stable
+//! under the `Comm` substitution, including when the received name is itself
+//! used as a channel. Hence a receiver never uses a received name at a type its
+//! senders did not supply: no sender ever puts the "wrong shape" on a channel,
+//! and a channel declared to carry `Nil` only ever transmits `⌜0⌝`-typed
+//! messages.
+//!
+//! Subject reduction is **argued, not mechanized**: we give no formal
+//! preservation proof, but the unit tests exercise it on concrete reductions —
+//! the plain handshake, a substitution *into a payload*, and a *reflective
+//! channel* (a received name reused as a channel) — and pin down the boundary
+//! with a negative test showing the enforced coherence check blocks the one
+//! construction that would violate it.
 //!
 //! # Protocol-theory connection (causality / measurability)
 //!
@@ -101,6 +114,19 @@ pub enum TypeError {
         /// The dangling binder symbol.
         sym: u64,
     },
+    /// The sort context disagrees with a channel's own reflected code: the
+    /// quoted process is channel-shaped (so its carried type is fixed by
+    /// reflection), yet Γ declares a *different* carried type for it. Such a Γ is
+    /// **incoherent** — it is exactly what would let a well-typed program reduce
+    /// to an ill-typed one — and is rejected up front.
+    IncoherentSort {
+        /// The offending channel name.
+        chan: Name,
+        /// The carried type fixed by the channel's own reflected code.
+        reflected: Ty,
+        /// The (conflicting) carried type declared in Γ.
+        declared: Ty,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -128,6 +154,16 @@ impl fmt::Display for TypeError {
                 fmt_name(chan)
             ),
             TypeError::UnboundName { sym } => write!(f, "unbound name x{sym} (open term)"),
+            TypeError::IncoherentSort {
+                chan,
+                reflected,
+                declared,
+            } => write!(
+                f,
+                "incoherent sort for channel `{}`: its code reflects a carried type \
+                 of {reflected}, but the context declares {declared}",
+                fmt_name(chan)
+            ),
         }
     }
 }
@@ -205,10 +241,21 @@ fn check_proc(env: &Env, ctx: &mut Ctx, proc: &Proc) -> Result<(), TypeError> {
 
 /// What messages `chan` carries, i.e. the `T` such that `chan : Chan(T)`.
 ///
-/// A free channel (a quote) takes its carried type from Γ, falling back to its
-/// reflected code if the quoted process is itself channel-shaped. A bound
-/// channel (a received name) is a channel only if it was received at a `Chan(_)`
-/// type.
+/// The two "what does this name carry" judgments must never disagree on the same
+/// concrete name, or a `Comm` could substitute a name into a channel position
+/// where its carried type flips — refuting subject reduction. So:
+///
+/// * A **bound channel** (a received name of message type `Chan(T)`) carries `T`
+///   — the reflected-type rule.
+/// * A **quote channel** `⌜P⌝` is governed by *reflection whenever its code is
+///   channel-shaped*: if `spatial_type(P) = Chan(T)`, it carries `T`, and any Γ
+///   declaration for it **must agree** with `T` (else [`IncoherentSort`]). Γ is
+///   consulted *only* for names whose quoted code is not channel-shaped (e.g.
+///   `req = ⌜0⌝`, which reflects to `Nil`); there Γ freely assigns the carried
+///   type. This mirrors the bound-name rule — the reflected type of a name fixes
+///   what it carries — and is what makes the discipline sound under reduction.
+///
+/// [`IncoherentSort`]: TypeError::IncoherentSort
 fn channel_carries(env: &Env, ctx: &Ctx, chan: &Name) -> Result<Ty, TypeError> {
     match chan {
         Name::Var(sym) => match ctx.get(sym) {
@@ -220,14 +267,25 @@ fn channel_carries(env: &Env, ctx: &Ctx, chan: &Name) -> Result<Ty, TypeError> {
             None => Err(TypeError::UnboundName { sym: *sym }),
         },
         Name::Quote(p) => {
-            if let Some(t) = env.carried(chan) {
-                return Ok(t.clone());
-            }
-            // Reflective fallback: a channel whose code is itself an output/input
-            // channel carries what that code carries.
+            let declared = env.carried(chan).cloned();
             match spatial_type_ctx(env, ctx, p)? {
-                Ty::Chan(t) => Ok(*t),
-                _ => Err(TypeError::UnsortedChannel { chan: chan.clone() }),
+                // Channel-shaped code: reflection fixes the carried type. Γ, if
+                // present, must agree — an incoherent Γ is rejected here.
+                Ty::Chan(t) => {
+                    let reflected = *t;
+                    if let Some(declared) = declared {
+                        if declared != reflected {
+                            return Err(TypeError::IncoherentSort {
+                                chan: chan.clone(),
+                                reflected,
+                                declared,
+                            });
+                        }
+                    }
+                    Ok(reflected)
+                }
+                // Non-channel code: Γ decides what this name carries.
+                _ => declared.ok_or_else(|| TypeError::UnsortedChannel { chan: chan.clone() }),
             }
         }
     }
@@ -383,8 +441,9 @@ mod tests {
     #[test]
     fn received_channel_can_be_used_when_typed_as_chan() {
         // gate carries Chan(Nil): the received name may then send 0 on itself.
-        // gate(x). x!(0)
-        let gate = quote(lift(quote(zero()), zero())); // distinct from req/ack
+        // gate(x). x!(0). `gate = ⌜0⌝` reflects to a *non*-channel type (Nil),
+        // so Γ freely assigns its carried type Chan(Nil) — a coherent context.
+        let gate = quote(zero());
         let env = Env::new().with(gate.clone(), Ty::chan(Ty::Nil));
         let p = input(gate, |x| lift(x, zero()));
         assert!(check(&env, &p).is_ok());
@@ -436,8 +495,10 @@ mod tests {
         }
     }
 
-    /// Subject reduction (preservation) on the plain handshake: the one reduct
-    /// stays well-typed under the same Γ.
+    /// Subject reduction (preservation) on the plain handshake, under a
+    /// **coherent** Γ (the property is only claimed for coherent contexts; see
+    /// [`incoherent_context_is_rejected`](tests::incoherent_context_is_rejected)
+    /// for what an incoherent Γ would do). The one reduct stays well-typed.
     #[test]
     fn preservation_plain_handshake() {
         let env = handshake_env();
@@ -454,9 +515,9 @@ mod tests {
         }
     }
 
-    /// Preservation across a substitution **into a payload**: the server
-    /// forwards the received name on `ack`, and after the `Comm` the reduct
-    /// `ack!(*⌜0⌝)` must still type-check.
+    /// Preservation across a substitution **into a payload**, under a coherent
+    /// Γ: the server forwards the received name on `ack`, and after the `Comm`
+    /// the reduct `ack!(*⌜0⌝)` must still type-check.
     #[test]
     fn preservation_forwarding() {
         // req and ack both carry Nil; server forwards x on ack.
@@ -471,6 +532,62 @@ mod tests {
                 check(&env, q).is_ok(),
                 "forwarded reduct not well-typed: {}",
                 fmt_proc(q)
+            );
+        }
+    }
+
+    /// The soundness counterexample: an **incoherent** Γ that declares `ack` to
+    /// carry `Chan(Nil)` while `ack`'s own code (`⌜0⌝!(0)`) reflects to carry
+    /// `Nil`. Without the coherence check the source `ack!(Q) | ack(z).z!(0)`
+    /// type-checks yet reduces (via `z := ⌜Q⌝ = ack`) to `ack!(0)`, which sends
+    /// `Nil` on the `Chan(Nil)`-declared `ack` — a wrong-shape delivery. The
+    /// checker must reject the source up front with [`TypeError::IncoherentSort`]
+    /// so no such reduction is ever reachable from an accepted program.
+    #[test]
+    fn incoherent_context_is_rejected() {
+        // req = ⌜0⌝, ack = ⌜⌜0⌝!(0)⌝; Q = req!(0) so ⌜Q⌝ ≡N ack.
+        let env = Env::new()
+            .with(ack(), Ty::chan(Ty::Nil))
+            .with(req(), Ty::Nil);
+        let q = lift(req(), zero()); // Q = req!(0), spatial type Chan(Nil)
+        let p = par([lift(ack(), q), input(ack(), |z| lift(z, zero()))]);
+        match check(&env, &p) {
+            Err(TypeError::IncoherentSort {
+                reflected,
+                declared,
+                ..
+            }) => {
+                assert_eq!(reflected, Ty::Nil);
+                assert_eq!(declared, Ty::chan(Ty::Nil));
+            }
+            other => panic!("expected IncoherentSort, got {other:?}"),
+        }
+    }
+
+    /// Preservation on a **reflective channel**: a received name is itself used
+    /// as a channel. `req` (= ⌜0⌝, reflecting to a non-channel type) is declared
+    /// to carry `Chan(Nil)`; the client sends `d!(0)` (a `Chan(Nil)` message,
+    /// with `d = ⌜⌜0⌝!(0)⌝` carrying `Nil` by reflection); the server uses the
+    /// received name as a channel. After the `Comm` the reduct
+    /// `⌜d!(0)⌝!(0)` sends `Nil` on a channel whose reflected carried type is
+    /// `Nil`, so it stays well-typed.
+    #[test]
+    fn preservation_reflective_channel() {
+        let d = quote(lift(quote(zero()), zero())); // ⌜⌜0⌝!(0)⌝, carries Nil
+        let env = Env::new().with(req(), Ty::chan(Ty::Nil));
+        // req!( d!(0) ) | req(x). x!(0)
+        let p = par([
+            lift(req(), lift(d.clone(), zero())),
+            input(req(), |x| lift(x, zero())),
+        ]);
+        assert!(check(&env, &p).is_ok(), "source should type-check");
+        let succ = step(&p);
+        assert!(!succ.is_empty(), "should reduce");
+        for r in &succ {
+            assert!(
+                check(&env, r).is_ok(),
+                "reflective-channel reduct not well-typed: {}",
+                fmt_proc(r)
             );
         }
     }
