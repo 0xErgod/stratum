@@ -16,15 +16,20 @@
     by computation, the 3 monoid cases reduced to AC facts about [norm_par]);
     the AC/sort crux [norm_par_comm]/[norm_par_assoc]/[norm_par_unit] (via the
     standard insertion-sort development [insert_perm]/[sort_perm]/[sort_sorted]/
-    [sorted_perm_unique], resting on the [pleb] order axioms); the completeness
+    [sorted_perm_unique], resting on the [pleb] order laws — now PROVED, see the
+    AXIOM BUDGET note below); the completeness
     side [canon_cong] -> [canon_complete] / [nequiv_complete]; [canon_idem]; and
     [ndepth_under_quote].
 
-    AXIOM BUDGET.  The ONLY axioms are the three [pleb] order laws
-    ([pleb_total]/[pleb_antisym]/[pleb_trans], below), which any concrete
-    instantiation of the [pleb] comparison must discharge.  `Print Assumptions`
-    on every theorem reports exactly these (plus the [pleb] Parameter itself) and
-    nothing else — in particular no unsanctioned axiom and no Admitted lemma.
+    AXIOM BUDGET — ZERO (as of Tier 3).  [pleb] is now a CONCRETE structural
+    comparator ([proc_compare], below), NOT an abstract [Parameter], and the three
+    order laws ([pleb_total]/[pleb_antisym]/[pleb_trans]) are PROVED of it ([Qed]),
+    not assumed.  `Print Assumptions` on every headline theorem — [canon_decides],
+    [step_sound], [step_complete], and the Tier-3 [reach_sound] — reports exactly
+    "Closed under the global context": NO axioms whatsoever (no [pleb] symbol, no
+    order assumptions), no unsanctioned axiom, no Admitted lemma.  (Historical
+    note: through Tier 2 the metatheory rested on the three [pleb] order laws as
+    axioms over an abstract [pleb] Parameter; Tier 3 discharged them.)
 
     MODELLING DECISIONS (mirror of SPEC.md; the Coq model and the Rust engine
     represent the SAME quotient):
@@ -47,16 +52,19 @@
       Assurance over the α/de-Bruijn conversion needs a separate model or the
       round-trip property test (SPEC S4); it is out of Tier-1 scope by design.
 
-    - [pleb] is an ABSTRACT total order, not tied to the Rust derived [Ord]
-      (variant order Zero<Input<Lift<Drop<Par, Quote<Var).  The RELATION decided
-      here — [canon p = canon q] — is invariant under the choice of total order on
-      components (equal iff the component multisets are permutations; this is
-      exactly what [sort_par_perm] establishes), so ≡ agrees with the Rust decision
-      regardless of which linear order instantiates [pleb].  CAVEAT: if any code
-      depends on the specific canonical REPRESENTATIVE (serialized/hashed canonical
-      forms crossing the Coq/Rust boundary, or LTS state identity in SPEC §F1),
-      [pleb] must be instantiated to Rust's [Ord] — an open obligation, not
-      discharged here.
+    - [pleb] is a CONCRETE total order ([proc_compare], a structural lexicographic
+      comparator with the three order laws PROVED), but is NOT tied to the Rust
+      derived [Ord] (variant order Zero<Input<Lift<Drop<Par, Quote<Var).  The
+      RELATION decided here — [canon p = canon q] — is invariant under the choice
+      of total order on components (equal iff the component multisets are
+      permutations; this is exactly what [sort_par_perm] establishes), so ≡ agrees
+      with the Rust decision regardless of which linear order [pleb] uses.  CAVEAT:
+      if any code depends on the specific canonical REPRESENTATIVE (serialized/
+      hashed canonical forms crossing the Coq/Rust boundary, or LTS state identity
+      in SPEC §F1), [proc_compare] must be aligned to Rust's [Ord] — an open
+      obligation, not discharged here (but no longer an axiom).  The differential
+      harness in `crates/stratum-core` accordingly compares canonical forms modulo
+      Par-component order.
 
     - ≡ absorbs ≡N at name positions.  [scong] is closed under [nequiv] wherever a
       name occurs (rules [sc_lift]/[sc_inp]/[sc_drop]); this matches the Rust
@@ -163,8 +171,48 @@ with nequiv : Name -> Name -> Prop :=
     (any consistent total order works); an executable instance (e.g. a structural
     comparison mirroring the Rust derived [Ord]) must be a decidable linear order
     on canonical forms — a PROOF OBLIGATION for [canon_complete], not a free
-    assumption. *)
-Parameter pleb : Proc -> Proc -> bool.
+    assumption.
+
+    TIER-3: [pleb] is now a CONCRETE structural comparator (was an abstract
+    [Parameter]).  Making it concrete is what turns [canon]/[step] into EXECUTABLE
+    functions the Coq kernel can [vm_compute] — the "verified oracle" the
+    differential harness in `crates/stratum-core` is checked against (see
+    `Extract.v`).  It is a tag-then-fields lexicographic order, mutually recursive
+    over [Proc]/[Name].  The three order laws below ([pleb_total]/[pleb_antisym]/
+    [pleb_trans]) — previously assumed of the abstract parameter — are now PROVED
+    of this concrete comparator ([Qed]), so the entire metatheory is discharged
+    with ZERO remaining axioms.  The choice of order remains a design freedom:
+    [canon p = canon q] is invariant under it ([sort_par_perm]); the differential
+    harness therefore compares canonical forms modulo this Par-component order. *)
+Fixpoint proc_compare (p q : Proc) : comparison :=
+  match p, q with
+  | zero, zero => Eq
+  | zero, _ => Lt
+  | _, zero => Gt
+  | inp c1 b1, inp c2 b2 =>
+      match name_compare c1 c2 with Eq => proc_compare b1 b2 | o => o end
+  | inp _ _, _ => Lt
+  | _, inp _ _ => Gt
+  | lift c1 a1, lift c2 a2 =>
+      match name_compare c1 c2 with Eq => proc_compare a1 a2 | o => o end
+  | lift _ _, _ => Lt
+  | _, lift _ _ => Gt
+  | drop x1, drop x2 => name_compare x1 x2
+  | drop _, _ => Lt
+  | _, drop _ => Gt
+  | par a1 b1, par a2 b2 =>
+      match proc_compare a1 a2 with Eq => proc_compare b1 b2 | o => o end
+  end
+with name_compare (x y : Name) : comparison :=
+  match x, y with
+  | var n, var m => Nat.compare n m
+  | var _, quote _ => Lt
+  | quote _, var _ => Gt
+  | quote p, quote q => proc_compare p q
+  end.
+
+Definition pleb (x y : Proc) : bool :=
+  match proc_compare x y with Gt => false | _ => true end.
 
 (** Flatten a parallel composition into its active components, dropping units. *)
 Fixpoint flatten_par (p : Proc) : list Proc :=
@@ -239,13 +287,160 @@ Proof. reflexivity. Qed.
 Lemma canon_name_quote_drop : forall x, canon_name (quote (drop x)) = canon_name x.
 Proof. reflexivity. Qed.
 
-(** The eventual concrete [pleb] (mirroring the Rust derived [Ord]) must be a
-    decidable linear order on canonical processes.  Stated as axioms, these are
-    the obligations any instantiation must meet; the AC lemmas below depend on
-    them. *)
-Axiom pleb_total   : forall x y, pleb x y = true \/ pleb y x = true.
-Axiom pleb_antisym : forall x y, pleb x y = true -> pleb y x = true -> x = y.
-Axiom pleb_trans   : forall x y z, pleb x y = true -> pleb y z = true -> pleb x z = true.
+(** The three order laws for [pleb].  Previously ASSUMED of an abstract
+    [Parameter]; now PROVED of the concrete [proc_compare]-based order, so the
+    metatheory rests on ZERO axioms.  We first establish the standard comparison
+    facts (reflexivity, [Eq]-reflects-equality, antisymmetry, [Lt]-transitivity)
+    for the mutually-recursive [proc_compare]/[name_compare], then derive the
+    [pleb] laws the AC lemmas below depend on. *)
+
+Lemma compare_refl :
+  (forall p, proc_compare p p = Eq) /\ (forall x, name_compare x x = Eq).
+Proof.
+  apply proc_name_mutind; simpl; intros.
+  - reflexivity.
+  - rewrite H; exact H0.
+  - rewrite H; exact H0.
+  - exact H.
+  - rewrite H; exact H0.
+  - apply Nat.compare_refl.
+  - exact H.
+Qed.
+
+Lemma compare_eq :
+  (forall p q, proc_compare p q = Eq -> p = q) /\
+  (forall x y, name_compare x y = Eq -> x = y).
+Proof.
+  apply proc_name_mutind.
+  - intros q; destruct q; simpl; try discriminate; reflexivity.
+  - intros c IHc b IHb q; destruct q; simpl; try discriminate.
+    destruct (name_compare c n) eqn:E; try discriminate.
+    intro Hb. apply IHc in E; apply IHb in Hb; subst; reflexivity.
+  - intros c IHc a IHa q; destruct q; simpl; try discriminate.
+    destruct (name_compare c n) eqn:E; try discriminate.
+    intro Ha. apply IHc in E; apply IHa in Ha; subst; reflexivity.
+  - intros x IHx q; destruct q; simpl; try discriminate.
+    intro H; apply IHx in H; subst; reflexivity.
+  - intros a IHa b IHb q; destruct q; simpl; try discriminate.
+    destruct (proc_compare a q1) eqn:E; try discriminate.
+    intro Hb. apply IHa in E; apply IHb in Hb; subst; reflexivity.
+  - intros n y; destruct y; simpl; try discriminate.
+    intro H; apply Nat.compare_eq in H; subst; reflexivity.
+  - intros p IHp y; destruct y; simpl; try discriminate.
+    intro H; apply IHp in H; subst; reflexivity.
+Qed.
+
+Lemma compare_antisym :
+  (forall p q, proc_compare q p = CompOpp (proc_compare p q)) /\
+  (forall x y, name_compare y x = CompOpp (name_compare x y)).
+Proof.
+  apply proc_name_mutind.
+  - intros q; destruct q; reflexivity.
+  - intros c IHc b IHb q; destruct q; simpl; try reflexivity.
+    rewrite IHc. destruct (name_compare c n); simpl; try reflexivity. apply IHb.
+  - intros c IHc a IHa q; destruct q; simpl; try reflexivity.
+    rewrite IHc. destruct (name_compare c n); simpl; try reflexivity. apply IHa.
+  - intros x IHx q; destruct q; simpl; try reflexivity. apply IHx.
+  - intros a IHa b IHb q; destruct q; simpl; try reflexivity.
+    rewrite IHa. destruct (proc_compare a q1); simpl; try reflexivity. apply IHb.
+  - intros n y; destruct y; simpl; try reflexivity. apply Nat.compare_antisym.
+  - intros p IHp y; destruct y; simpl; try reflexivity. apply IHp.
+Qed.
+
+Lemma compare_lt_trans :
+  (forall p q r, proc_compare p q = Lt -> proc_compare q r = Lt -> proc_compare p r = Lt) /\
+  (forall x y z, name_compare x y = Lt -> name_compare y z = Lt -> name_compare x z = Lt).
+Proof.
+  apply proc_name_mutind.
+  - (* p = zero *) intros q r Hpq Hqr.
+    destruct r; try reflexivity; destruct q; simpl in *; discriminate.
+  - (* p = inp c b *) intros c IHc b IHb q r Hpq Hqr.
+    destruct q; simpl in Hpq; try discriminate;
+      destruct r; simpl in Hqr |- *; try discriminate; try reflexivity.
+    (* q = inp n p0, r = inp n0 p1 *)
+    destruct (name_compare c n) eqn:E1; try discriminate.
+    + apply compare_eq in E1; subst n.
+      destruct (name_compare c n0) eqn:E2; try reflexivity.
+      * apply compare_eq in E2; subst n0. eapply IHb; eauto.
+      * (* name_compare c n0 = Gt is impossible: Hqr says q<r requires it <= Eq *)
+        discriminate.
+    + destruct (name_compare n n0) eqn:E2; try discriminate.
+      * apply compare_eq in E2; subst n0. rewrite E1. reflexivity.
+      * assert (name_compare c n0 = Lt) by (eapply IHc; eauto).
+        rewrite H. reflexivity.
+  - (* p = lift c a *) intros c IHc a IHa q r Hpq Hqr.
+    destruct q; simpl in Hpq; try discriminate;
+      destruct r; simpl in Hqr |- *; try discriminate; try reflexivity.
+    destruct (name_compare c n) eqn:E1; try discriminate.
+    + apply compare_eq in E1; subst n.
+      destruct (name_compare c n0) eqn:E2; try reflexivity.
+      * apply compare_eq in E2; subst n0. eapply IHa; eauto.
+      * discriminate.
+    + destruct (name_compare n n0) eqn:E2; try discriminate.
+      * apply compare_eq in E2; subst n0. rewrite E1. reflexivity.
+      * assert (name_compare c n0 = Lt) by (eapply IHc; eauto).
+        rewrite H. reflexivity.
+  - (* p = drop x *) intros x IHx q r Hpq Hqr.
+    destruct q; simpl in Hpq; try discriminate;
+      destruct r; simpl in Hqr |- *; try discriminate; try reflexivity.
+    eapply IHx; eauto.
+  - (* p = par a b *) intros a IHa b IHb q r Hpq Hqr.
+    destruct q; simpl in Hpq; try discriminate;
+      destruct r; simpl in Hqr |- *; try discriminate; try reflexivity.
+    destruct (proc_compare a q1) eqn:E1; try discriminate.
+    + apply compare_eq in E1; subst q1.
+      destruct (proc_compare a r1) eqn:E2; try reflexivity.
+      * apply compare_eq in E2; subst r1. eapply IHb; eauto.
+      * discriminate.
+    + destruct (proc_compare q1 r1) eqn:E2; try discriminate.
+      * apply compare_eq in E2; subst r1. rewrite E1. reflexivity.
+      * assert (proc_compare a r1 = Lt) by (eapply IHa; eauto).
+        rewrite H. reflexivity.
+  - (* x = var n *) intros n y z Hxy Hyz.
+    destruct y; simpl in Hxy; try discriminate;
+      destruct z; simpl in Hyz |- *; try discriminate; try reflexivity.
+    rewrite Nat.compare_lt_iff in *. eapply Nat.lt_trans; eauto.
+  - (* x = quote p *) intros p IHp y z Hxy Hyz.
+    destruct y; simpl in Hxy; try discriminate;
+      destruct z; simpl in Hyz |- *; try discriminate; try reflexivity.
+    eapply IHp; eauto.
+Qed.
+
+(** The [pleb] order laws, now derived (was: assumed).  These are exactly the
+    three obligations the AC lemmas below depend on. *)
+Lemma pleb_total : forall x y, pleb x y = true \/ pleb y x = true.
+Proof.
+  intros x y; unfold pleb.
+  destruct (proc_compare x y) eqn:E.
+  - left; reflexivity.
+  - left; reflexivity.
+  - right. pose proof (proj1 compare_antisym x y) as Hanti.
+    rewrite E in Hanti. simpl in Hanti. rewrite Hanti. reflexivity.
+Qed.
+
+Lemma pleb_antisym : forall x y, pleb x y = true -> pleb y x = true -> x = y.
+Proof.
+  intros x y Hxy Hyx; unfold pleb in *.
+  destruct (proc_compare x y) eqn:E; try discriminate.
+  - apply (proj1 compare_eq); exact E.
+  - exfalso. pose proof (proj1 compare_antisym x y) as Hanti.
+    rewrite E in Hanti. simpl in Hanti. rewrite Hanti in Hyx. discriminate.
+Qed.
+
+Lemma pleb_trans : forall x y z, pleb x y = true -> pleb y z = true -> pleb x z = true.
+Proof.
+  intros x y z Hxy Hyz; unfold pleb in *.
+  destruct (proc_compare x z) eqn:Exz; try reflexivity.
+  exfalso.
+  (* proc_compare x z = Gt while both x<=y and y<=z: impossible. *)
+  destruct (proc_compare x y) eqn:Exy; try discriminate.
+  - apply (proj1 compare_eq) in Exy; subst y. rewrite Exz in Hyz; discriminate.
+  - destruct (proc_compare y z) eqn:Eyz; try discriminate.
+    + apply (proj1 compare_eq) in Eyz; subst z.
+      rewrite Exy in Exz; discriminate.
+    + assert (proc_compare x z = Lt) by (eapply (proj1 compare_lt_trans); eauto).
+      rewrite Exz in H; discriminate.
+Qed.
 
 (* ------------------------------------------------------------------ *)
 (** ** Sorting infrastructure for the AC lemmas (Engineer 1)            *)
@@ -1224,3 +1419,73 @@ Proof.
       simpl. reflexivity. }
   rewrite Hnil in Hin. contradiction.
 Qed.
+
+(* ================================================================== *)
+(** * TIER-3: a verified bounded reachability checker over [step]      *)
+(* ================================================================== *)
+
+(** The SECONDARY Tier-3 deliverable: a small, EXECUTABLE, decidable checker
+    built on the proven [step], with a machine-checked SOUNDNESS lemma against the
+    reduction relation [red].  It is the reachability analysis that a model
+    checker sits on top of; here we verify its core guarantee — every state it
+    reports is genuinely reachable — with ZERO axioms (it rests only on
+    [step_sound]).
+
+    (A full Knaster–Tarski μ-calculus fixpoint checker and a Paige–Tarjan
+    bisimulation are DEFERRED — see `proofs/README.md`; they are a separate
+    research effort and are not faked here.) *)
+
+(** Reflexive–transitive closure of one-step reduction: [p -->* q]. *)
+Inductive star : Proc -> Proc -> Prop :=
+  | star_refl : forall p, star p p
+  | star_step : forall p q r, red p q -> star q r -> star p r.
+
+Lemma star_trans : forall p q r, star p q -> star q r -> star p r.
+Proof.
+  intros p q r H; induction H; intro Hqr; [exact Hqr|].
+  eapply star_step; [exact H | apply IHstar; exact Hqr].
+Qed.
+
+(** [reach n p]: the states discovered by unfolding [step] to depth [n] from [p]
+    (including [p] itself).  Executable: [step] is a concrete function. *)
+Fixpoint reach (n : nat) (p : Proc) : list Proc :=
+  match n with
+  | O    => [p]
+  | S k  => p :: flat_map (reach k) (step p)
+  end.
+
+(** SOUNDNESS: every reported state is genuinely reachable under [-->*].  The
+    proof rests only on [step_sound] (each [step] edge is a real [red]), threaded
+    through the depth induction — no new axiom. *)
+Theorem reach_sound : forall n p q, In q (reach n p) -> star p q.
+Proof.
+  induction n as [|k IH]; intros p q Hin; simpl in Hin.
+  - destruct Hin as [<-|[]]. apply star_refl.
+  - destruct Hin as [<-|Hin]; [apply star_refl|].
+    apply in_flat_map in Hin. destruct Hin as [s [Hs Hq]].
+    eapply star_step.
+    + apply step_sound; exact Hs.
+    + apply IH; exact Hq.
+Qed.
+
+(** [reach] always reports the source (reflexivity witness). *)
+Lemma reach_refl : forall n p, In p (reach n p).
+Proof. intros [|k] p; simpl; left; reflexivity. Qed.
+
+(** A decidable normal-form test on the executable [step].  NOTE (honest scope):
+    like the Rust `is_normal_form`, this checks only [step p] itself, NOT every
+    ≡-representative of [p]; a redex exposed only after a name-level rewrite is not
+    detected.  So [is_nf p = true] certifies exactly "[p] has no Comm redex among
+    its own active components", which is what the engine computes — not the
+    stronger "[p] is [red]-normal".  We therefore do NOT claim the stronger
+    property. *)
+Definition is_nf (p : Proc) : bool :=
+  match step p with [] => true | _ => false end.
+
+Lemma is_nf_sound : forall p, is_nf p = true -> step p = [].
+Proof. intros p H; unfold is_nf in H; destruct (step p); [reflexivity|discriminate]. Qed.
+
+(** Executable sanity: [x5⟨0⟩ | x5(y).*y] runs the received code and reaches [0]. *)
+Example reach_demo :
+  In zero (reach 2 (par (lift (var 5) zero) (inp (var 5) (drop (var 0))))).
+Proof. vm_compute. tauto. Qed.
