@@ -540,6 +540,324 @@ fn name_mentions_channel(n: &Name, c: &Name) -> bool {
     }
 }
 
+// ===========================================================================
+// Symmetry reduction — an opt-in, quotiented explorer.
+// ===========================================================================
+
+impl Lts {
+    /// Explore the reduction graph from `start` under **symmetry reduction**,
+    /// quotienting the state space by the symmetric group that permutes a set of
+    /// **interchangeable channels**.
+    ///
+    /// Many protocols are built from interchangeable agents (N identical clients,
+    /// a pool of equivalent workers, …). Their state spaces then contain large
+    /// families of states that differ only by *which* agent is in *which* role —
+    /// states related by a permutation of the agents' channels. This explorer
+    /// collapses each such family to a single node.
+    ///
+    /// `interchangeable` is the generating set `S = {c₀, …, c_{k-1}}` of channels
+    /// the caller declares mutually exchangeable; the symmetry group is the full
+    /// **symmetric group `Sym(S)`** permuting them. Two states are identified when
+    /// one is carried to the other by some `π ∈ Sym(S)` (permuting those channels
+    /// throughout the term — in the channel positions of `Lift`/`Input`, in
+    /// `Drop`s, and *inside quotes and messages*, matched up to `≡N`). Each state
+    /// is keyed by its **canonical orbit representative**: the `≡`-canonical
+    /// minimum (under `Proc`'s `Ord`) over the `|S|!` images `π(state)`.
+    ///
+    /// # Precondition — a genuine symmetry (enforced by fallback)
+    ///
+    /// The caller must supply a set for which permuting the channels is a genuine
+    /// **system automorphism**. The sufficient, checked condition is that the set
+    /// is an **independent generator**: *no interchangeable channel occurs (up to
+    /// `≡N`) inside another's quoted body* (e.g. `c₀ = ⌜0⌝`, `c₁ = ⌜c₀⟨|0|⟩⌝`
+    /// **violates** this — `c₀` is buried in `c₁`). Under this condition the channel
+    /// permutation is a `≡N`-automorphism, so the quotient is sound.
+    ///
+    /// When the condition **fails**, permuting a channel would not permute its
+    /// buried occurrences, so distinct states could be wrongly conflated and
+    /// reachable behaviour dropped. To stay sound on *every* input, this method
+    /// then **conservatively falls back to the full [`Lts::explore`]** — it
+    /// produces a reduced LTS only when the declared symmetry is *provably*
+    /// independent, and an exact, unquotiented one otherwise. The check is
+    /// conservative: any doubtful occurrence is treated as a dependence.
+    ///
+    /// # Intended scale
+    ///
+    /// The representative is computed by enumerating all `|S|!` permutations of
+    /// the interchangeable set and canonicalizing each image, so this is intended
+    /// for **small** interchangeable sets (the usual case: a handful of symmetric
+    /// agents). The per-state cost is `Θ(|S|! · |state|)`; it is deliberately
+    /// transparent rather than clever.
+    ///
+    /// # What this preserves — and what it does NOT
+    ///
+    /// **Provided the genuine-symmetry precondition above holds** (otherwise the
+    /// result *is* the full [`Lts::explore`], which preserves everything), the
+    /// quotient LTS is bisimilar to the full [`Lts::explore`] for exactly the
+    /// **symmetry-invariant** properties — those whose truth is unchanged by
+    /// permuting the interchangeable channels. Concretely it preserves:
+    ///
+    /// * **reachability / safety of symmetric predicates** — e.g. "some agent
+    ///   reaches `done`", the number of concurrent barbs on a *non*-interchangeable
+    ///   channel, or "some interchangeable channel carries a barb". The set of
+    ///   reachable symmetry-invariant valuations is identical to the full LTS, so
+    ///   non-next μ-calculus verdicts (`EF`/`AG`, …) over symmetric barb
+    ///   propositions agree.
+    ///
+    /// It **does NOT** preserve, and must NOT be used for:
+    ///
+    /// * **properties naming a specific interchangeable channel asymmetrically** —
+    ///   e.g. "`c₃` (rather than some cᵢ) carries a barb". The quotient conflates
+    ///   `c₃` with its orbit, so such a predicate is not well-defined on it. Phrase
+    ///   observations over the *whole* interchangeable set (or over fixed,
+    ///   non-interchangeable channels) instead.
+    /// * **bisimulation over asymmetric observations** and **next-time modalities**
+    ///   that reference a specific interchangeable channel — use [`Lts::explore`].
+    ///
+    /// Because states are stepped through their orbit representative, the
+    /// firing-channel **label** and **message** of a lifted transition are recorded
+    /// *in the representative's frame*: they are only meaningful **up to the
+    /// group**. Symmetry-invariant label reasoning (a barb on *some* cᵢ, or on a
+    /// fixed non-interchangeable channel) is stable; the specific interchangeable
+    /// identity of a label is not.
+    ///
+    /// With an **empty** `interchangeable` set the group is trivial and this
+    /// coincides exactly with [`Lts::explore`] (no quotient). [`Lts::explore`] is
+    /// left byte-for-byte behaviourally unchanged; this is a wholly separate entry
+    /// point.
+    ///
+    /// Like [`Lts::explore`], exploration is bounded by `max_states`;
+    /// [`Lts::is_truncated`] reports whether the bound was hit.
+    pub fn explore_symmetric(start: &Proc, max_states: usize, interchangeable: &[Name]) -> Lts {
+        // Canonicalize the generating set once, so `≡N` matching and the
+        // substituted images are stable and re-matchable across compositions. A
+        // `canonical name → index` map lets `permute_name` match a channel with a
+        // single canonicalization + lookup instead of an `≡N` scan of the set.
+        let inter: Vec<Name> = interchangeable.iter().map(canonicalize_name).collect();
+
+        // Soundness guard. The match-wins channel permutation (`permute_name`) is a
+        // `≡N`-automorphism — hence the quotient is sound — only when the declared
+        // channels are a **genuine independent generator**: no interchangeable
+        // channel occurs (up to `≡N`) inside another's quoted body. If that fails,
+        // permuting a channel would fail to also permute its buried occurrences,
+        // conflating genuinely distinct states and *dropping reachable behaviour*.
+        // Rather than emit unsound verdicts we conservatively fall back to the full,
+        // unquotiented [`Lts::explore`], which is always correct.
+        if !interchange_is_independent(&inter) {
+            return Lts::explore(start, max_states);
+        }
+
+        let sym = Symmetry {
+            index: inter
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.clone(), i))
+                .collect(),
+            names: inter,
+        };
+        let perms = all_permutations(sym.names.len());
+
+        let mut states: Vec<Proc> = Vec::new();
+        let mut index: HashMap<Proc, usize> = HashMap::new();
+        let mut transitions: Vec<Vec<Transition>> = Vec::new();
+        let mut truncated = false;
+        // Each queue entry carries a *nominal* representative of the orbit (so it
+        // can be stepped without feeding a canonical de-Bruijn term back into the
+        // substitution engine); the identity key is its canonical orbit minimum.
+        let mut queue: VecDeque<(usize, Proc)> = VecDeque::new();
+
+        let (start_key, start_rep) = orbit_rep(start, &sym, &perms);
+        index.insert(start_key.clone(), 0);
+        states.push(start_key);
+        transitions.push(Vec::new());
+        queue.push_back((0, start_rep));
+
+        while let Some((from, rep)) = queue.pop_front() {
+            // Stepping the orbit representative alone suffices: ρ-reduction is
+            // equivariant under the channel permutation, so every outgoing edge of
+            // every orbit member is realized (up to the group) by an edge of the
+            // representative, retargeted to the target's orbit representative.
+            for step in step_labeled(&rep) {
+                let (key, target_rep) = orbit_rep(&step.reduct, &sym, &perms);
+                let target = if let Some(&t) = index.get(&key) {
+                    t
+                } else if states.len() >= max_states {
+                    truncated = true;
+                    continue;
+                } else {
+                    let t = states.len();
+                    index.insert(key.clone(), t);
+                    states.push(key);
+                    transitions.push(Vec::new());
+                    queue.push_back((t, target_rep));
+                    t
+                };
+                transitions[from].push(Transition {
+                    label: step.channel,
+                    message: step.message,
+                    target,
+                });
+            }
+        }
+
+        Lts {
+            states,
+            index,
+            transitions,
+            truncated,
+        }
+    }
+}
+
+/// The interchangeable channel set, in canonical form, with an index for fast
+/// `≡N` matching. `names[i]` is the `i`-th interchangeable channel (`≡N`-canonical)
+/// and `index` maps that canonical name back to `i`.
+struct Symmetry {
+    names: Vec<Name>,
+    index: HashMap<Name, usize>,
+}
+
+/// Whether the (canonical) interchangeable set is a **genuine independent
+/// generator**: no channel occurs (up to `≡N`) strictly *inside* another's quoted
+/// body. This is the sufficient condition under which the match-wins channel
+/// permutation is a `≡N`-automorphism, so the symmetry quotient is sound; when it
+/// fails, [`Lts::explore_symmetric`] falls back to full exploration.
+///
+/// Conservative by construction: an occurrence anywhere — in a channel position,
+/// a `Drop`, a lifted payload, or nested inside a further quote — counts as a
+/// dependence (self-containment is impossible, since quote depth strictly
+/// decreases under a quote, so only distinct pairs are checked).
+fn interchange_is_independent(inter: &[Name]) -> bool {
+    for (i, ci) in inter.iter().enumerate() {
+        for (j, cj) in inter.iter().enumerate() {
+            if i != j && name_body_contains(cj, ci) {
+                return false; // ci occurs inside cj's body — not independent.
+            }
+        }
+    }
+    true
+}
+
+/// Whether `needle` (`≡N`-canonical) occurs up to `≡N` strictly *inside*
+/// `container`'s quoted body (below the top-level name itself).
+fn name_body_contains(container: &Name, needle: &Name) -> bool {
+    match container {
+        Name::Var(_) => false,
+        Name::Quote(p) => proc_contains_name(p, needle),
+    }
+}
+
+/// Whether `needle` occurs up to `≡N` as any sub-name anywhere in `p` — channel
+/// positions, `Drop`s, lifted payloads, input bodies, and inside nested quotes.
+fn proc_contains_name(p: &Proc, needle: &Name) -> bool {
+    match p {
+        Proc::Zero => false,
+        Proc::Drop(n) => name_contains_name(n, needle),
+        Proc::Lift { chan, arg } => {
+            name_contains_name(chan, needle) || proc_contains_name(arg, needle)
+        }
+        Proc::Input { chan, body, .. } => {
+            name_contains_name(chan, needle) || proc_contains_name(body, needle)
+        }
+        Proc::Par(ps) => ps.iter().any(|q| proc_contains_name(q, needle)),
+    }
+}
+
+/// Whether the name `n` is `≡N needle`, or `needle` occurs inside `n`'s quote.
+fn name_contains_name(n: &Name, needle: &Name) -> bool {
+    name_equiv(n, needle)
+        || match n {
+            Name::Var(_) => false,
+            Name::Quote(p) => proc_contains_name(p, needle),
+        }
+}
+
+/// The canonical orbit representative of `nominal` under `Sym(sym.names)`,
+/// together with a *nominal* term that canonicalizes to it (the image achieving
+/// the minimum), suitable for further stepping.
+///
+/// Enumerates every permutation `π` in `perms`, renames the interchangeable
+/// channels of `nominal` accordingly (keeping binder symbols intact, so the image
+/// stays a steppable nominal term), canonicalizes, and keeps the `≡`-least image.
+/// Ties on the canonical key are broken by first occurrence, which is
+/// deterministic and irrelevant to the key. Because `perms` always contains the
+/// identity, the result is well-defined (and for an empty set it is exactly
+/// `(canonicalize(nominal), nominal.clone())`).
+fn orbit_rep(nominal: &Proc, sym: &Symmetry, perms: &[Vec<usize>]) -> (Proc, Proc) {
+    let mut best: Option<(Proc, Proc)> = None;
+    for perm in perms {
+        let image = permute_proc(nominal, sym, perm);
+        let key = canonicalize(&image);
+        match &best {
+            Some((best_key, _)) if *best_key <= key => {}
+            _ => best = Some((key, image)),
+        }
+    }
+    best.expect("perms always contains the identity permutation")
+}
+
+/// Rename the interchangeable channels of `p` by `perm`, throughout the term.
+///
+/// Binder symbols and non-interchangeable names are preserved verbatim, so the
+/// result is a well-formed nominal term with the same reduction structure up to
+/// the renaming (ρ-reduction is equivariant under this map).
+fn permute_proc(p: &Proc, sym: &Symmetry, perm: &[usize]) -> Proc {
+    match p {
+        Proc::Zero => Proc::Zero,
+        Proc::Drop(n) => Proc::Drop(permute_name(n, sym, perm)),
+        Proc::Lift { chan, arg } => Proc::Lift {
+            chan: permute_name(chan, sym, perm),
+            arg: Box::new(permute_proc(arg, sym, perm)),
+        },
+        Proc::Input { chan, bound, body } => Proc::Input {
+            chan: permute_name(chan, sym, perm),
+            bound: *bound,
+            body: Box::new(permute_proc(body, sym, perm)),
+        },
+        Proc::Par(ps) => Proc::Par(ps.iter().map(|q| permute_proc(q, sym, perm)).collect()),
+    }
+}
+
+/// Rename `n` by `perm`: if `n ≡N cᵢ` for an interchangeable `cᵢ`, replace the
+/// whole name with the canonical `c_{π(i)}`; otherwise recurse under the quote so
+/// interchangeable channels *nested inside* a name are permuted too.
+fn permute_name(n: &Name, sym: &Symmetry, perm: &[usize]) -> Name {
+    if !sym.names.is_empty() {
+        if let Some(&i) = sym.index.get(&canonicalize_name(n)) {
+            return sym.names[perm[i]].clone();
+        }
+    }
+    match n {
+        Name::Var(_) => n.clone(),
+        Name::Quote(p) => Name::Quote(Box::new(permute_proc(p, sym, perm))),
+    }
+}
+
+/// All permutations of `0..n` (as index vectors). `n = 0` yields the single empty
+/// permutation `[[]]`. Intended for small `n` (the interchangeable-set size).
+fn all_permutations(n: usize) -> Vec<Vec<usize>> {
+    let mut current: Vec<usize> = (0..n).collect();
+    let mut out = Vec::new();
+    heap_permute(&mut current, n, &mut out);
+    out
+}
+
+/// Heap's algorithm: emit every permutation of `current[..k]`'s ordering.
+fn heap_permute(current: &mut [usize], k: usize, out: &mut Vec<Vec<usize>>) {
+    if k <= 1 {
+        out.push(current.to_vec());
+        return;
+    }
+    for i in 0..k {
+        heap_permute(current, k - 1, out);
+        if k.is_multiple_of(2) {
+            current.swap(i, k - 1);
+        } else {
+            current.swap(0, k - 1);
+        }
+    }
+}
+
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
