@@ -189,6 +189,60 @@ pub fn holds_epistemic<L: Fn(&str, &Proc) -> bool>(
     check_epistemic(lts, formula, label, agents)[lts.initial()]
 }
 
+/// A model-checking result together with whether it is *definitive*.
+///
+/// The μ-calculus checker runs over the bounded reachable fragment the LTS
+/// explored. When the LTS was fully explored (`!Lts::is_truncated()`), the
+/// reachable state space is finite and complete, so the verdict is **exact**.
+/// When exploration was truncated at the state bound, the verdict is only about
+/// the explored fragment (`exact == false`).
+///
+/// The run extractors stay sound only within their intended polarity: the *run*
+/// they return is always a genuine sequence of real reductions, but its
+/// endpoint's satisfaction of the queried formula is preserved under truncation
+/// only for the polarity each targets — a [`witness`] for a *reachability*
+/// (existential) goal, and a [`counterexample`] to a *safety* (universal)
+/// invariant. For a universal `witness` goal, or a non-safety `counterexample`
+/// invariant, a `Some` may be spurious under truncation, since exploration drops
+/// the edges out of boundary states.
+///
+/// In `stratum-equiv` the analogous distinction is carried by
+/// `Verdict::Inconclusive`, returned when either system's exploration truncates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Checked {
+    /// Whether the formula holds at the queried state, over the explored LTS.
+    pub holds: bool,
+    /// `true` if the LTS was fully explored, so `holds` is definitive; `false`
+    /// if exploration was truncated, so `holds` is only about the fragment.
+    pub exact: bool,
+}
+
+/// Whether the initial state satisfies `formula`, paired with whether the
+/// verdict is exact (the LTS was fully explored) — see [`Checked`].
+pub fn holds_checked<L: Fn(&str, &Proc) -> bool>(
+    lts: &Lts,
+    formula: &Formula,
+    label: &L,
+) -> Checked {
+    Checked {
+        holds: holds(lts, formula, label),
+        exact: !lts.is_truncated(),
+    }
+}
+
+/// Whether state `i` satisfies `formula`, paired with exactness — see [`Checked`].
+pub fn satisfies_checked<L: Fn(&str, &Proc) -> bool>(
+    lts: &Lts,
+    i: usize,
+    formula: &Formula,
+    label: &L,
+) -> Checked {
+    Checked {
+        holds: satisfies(lts, i, formula, label),
+        exact: !lts.is_truncated(),
+    }
+}
+
 /// A shortest labelled path from the initial state to some state satisfying
 /// `pred`, as `(firing channel, state)` steps. `Some(vec![])` if the initial
 /// state already satisfies `pred`; `None` if no such state is reachable.
