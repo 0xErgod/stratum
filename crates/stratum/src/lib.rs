@@ -14,8 +14,11 @@
 //! | [`logic`]  | ϕ | modal μ-calculus + epistemic model checking |
 //! | [`field`]  | σ | information fields, projections, measurability |
 //! | [`equiv`]  | — | N-barbed bisimulation, may-testing |
+//! | [`encodings`] | — | derived operators (replication, …) as user-space macros |
 //!
 //! See `crates/stratum/examples/` for worked protocols.
+
+pub mod encodings;
 
 pub use stratum_core as core;
 pub use stratum_equiv as equiv;
