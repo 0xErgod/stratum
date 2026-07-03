@@ -32,7 +32,7 @@ use std::collections::HashSet;
 
 use crate::congruence::{canonicalize, canonicalize_name, name_equiv};
 use crate::subst::subst_semantic;
-use crate::term::{Name, Proc};
+use crate::term::{drop_, par, Name, Proc};
 
 /// A labelled one-step transition of the trace LTS, as produced by
 /// [`step_labeled`].
@@ -53,6 +53,169 @@ pub struct Step {
     pub reduct: Proc,
 }
 
+/// The synchronization test parameterizing the `Comm` rule (§2.8).
+///
+/// The paper's communication rule fires `x0⟨|Q|⟩ | x1(y).P` exactly when the
+/// sending and receiving channels are a *channel / co-channel pair*. §2.8 leaves
+/// which pairs qualify as a **parameter** of the calculus: the default reading
+/// takes it to be name equivalence `≡N` ([`NameEquiv`]), while §2.8 also names
+/// the *Comm-annihilation* family ([`Annihilation`]), in which two channels pair
+/// up when their dropped processes annihilate.
+///
+/// A `SyncRule` implementation is the guard the [`redexes_with`] / [`step_with`] /
+/// [`step_labeled_with`] family consults in place of the hard-wired
+/// `name_equiv(x0, x1)`. Implementations should be *symmetric*
+/// (`synchronize(a, b) == synchronize(b, a)`) and *total* (never panic), but the
+/// reducer does not rely on either for memory safety.
+///
+/// The un-suffixed [`step`] / [`step_labeled`] entry points fix this parameter
+/// to [`NameEquiv`], so the default operational semantics — and every existing
+/// caller — is byte-for-byte unchanged.
+pub trait SyncRule {
+    /// Whether a lift on `sender_chan` may communicate with an input on
+    /// `receiver_chan` — i.e. whether the two are a channel / co-channel pair.
+    fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool;
+}
+
+/// The default synchronization rule: name equivalence `≡N` (§2.4, §2.8).
+///
+/// `synchronize(x0, x1)` is exactly `name_equiv(x0, x1)`, so reducing with
+/// `NameEquiv` reproduces the standard `Comm` rule — and hence the behavior of
+/// the un-suffixed [`step`] and [`step_labeled`] — exactly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NameEquiv;
+
+impl SyncRule for NameEquiv {
+    #[inline]
+    fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool {
+        name_equiv(sender_chan, receiver_chan)
+    }
+}
+
+/// A bounded, decidable **under-approximation** of the §2.8 Comm-annihilation
+/// family.
+///
+/// # The paper's rule
+///
+/// §2.8 parameterizes the calculus by an alternative to `≡N`: `x0` and `x1` are
+/// a channel / co-channel pair when their dropped processes *annihilate*, i.e.
+///
+/// ```text
+/// *x0 | *x1  →*  0.
+/// ```
+///
+/// The paper's base case is that **`0` is its own co-channel**: with
+/// `x0 = x1 = ⌜0⌝`, dropping runs the quoted code (§2.6), so
+/// `*⌜0⌝ | *⌜0⌝` is `0 | 0 ≡ 0`, which already annihilates in zero steps.
+///
+/// The general condition `*x0 | *x1 →* 0` is a universal reachability property
+/// of the (in general infinite) reduction graph, and is therefore
+/// **undecidable**. Any executable rule must approximate it.
+///
+/// # What this implementation decides
+///
+/// [`Annihilation`] is that approximation, made honest by two design choices:
+///
+/// * **Drops are run — under this crate's inert-drop reduction.** Because this
+///   crate keeps `*⌜P⌝` inert at the process level (drop only runs under
+///   substitution — see [`crate::congruence`]), the annihilation condition is
+///   evaluated on the *dropped* processes: a channel `⌜P⌝` contributes `P` to
+///   the candidate `P0 | P1` (§2.6), while a still-bound name `x` contributes an
+///   inert `*x`. This is what makes the `⌜0⌝ / ⌜0⌝` base case reduce to `0`.
+///   Annihilation is judged w.r.t. *this* reduction only: a nested or deferred
+///   drop such as `⌜*⌜0⌝⌝` — which would collapse to `0` under full ρ-reduction
+///   but stays the inert `*⌜0⌝` here — is conservatively **not** recognized as
+///   annihilating. That is safe under-reporting, never over-reporting.
+/// * **Bounded, terminating, and robust.** `synchronize(x0, x1)` is `true` iff,
+///   exploring `P0 | P1` with the ordinary (default-rule) reducer to depth
+///   [`bound`](Annihilation::bound):
+///     1. the exploration **settled** within the bound — every reduction
+///        sequence reached a normal form; no reducible state was left on the
+///        frontier and no non-terminating cycle was entered; **and**
+///     2. at least one such normal form is `0`, and **every** normal form is
+///        `0`.
+///
+///   Condition (1) closes the truncation hole: a candidate with one run to `0`
+///   *and* another run still reducible at the bound (or divergent) is **not**
+///   accepted, because that other run's fate is unknown within the bound.
+///   Condition (2) is *robust* annihilation — every settled reduction ends at
+///   `0`. If either fails (no normal form reached, a reducible state remains, or
+///   some normal form is non-`0`), the verdict is a conservative `false`.
+///
+/// # Faithfulness
+///
+/// This is a **decidable under-approximation**: `synchronize` may answer `false`
+/// where the undecidable paper condition would answer `true` (the bound was too
+/// small to let every run reach `0`, or a non-`0` stuck state was reachable),
+/// but it **never** answers `true` for a pair whose dropped processes can, under
+/// this crate's reduction, reach a normal form other than `0` — including runs
+/// that only resolve beyond the bound. A `true` verdict therefore certifies:
+/// within `bound` steps every reduction of `P0 | P1` terminated, and all
+/// terminated at `0`. Raising [`bound`](Annihilation::bound) only ever turns
+/// `false` verdicts into `true` for pairs that genuinely annihilate but need
+/// more steps to settle; it is opt-in and never affects the default
+/// [`NameEquiv`] semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Annihilation {
+    /// The reduction depth to which `*x0 | *x1` is explored. Larger bounds
+    /// recognize slower annihilations at greater cost; `0` only accepts pairs
+    /// that annihilate with no reduction at all (e.g. the `⌜0⌝ / ⌜0⌝` base
+    /// case).
+    pub bound: usize,
+}
+
+/// The process obtained by *running* a dropped name (§2.6): `*⌜P⌝` runs `P`.
+///
+/// A quote `⌜P⌝` yields its body `P`; a still-bound name `x` yields the inert
+/// drop `*x` (which cannot reduce further on its own). This is the honest
+/// process-level reading of `*x` used by [`Annihilation`].
+fn dropped_process(x: &Name) -> Proc {
+    match x {
+        Name::Quote(p) => (**p).clone(),
+        Name::Var(_) => drop_(x.clone()),
+    }
+}
+
+impl SyncRule for Annihilation {
+    fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool {
+        // *x0 | *x1, with the two drops run to their quoted bodies (§2.6).
+        let candidate = par([
+            dropped_process(sender_chan),
+            dropped_process(receiver_chan),
+        ]);
+
+        // Explore with the ordinary (default-rule) reducer to the configured
+        // depth. `reachable_reporting` returns canonical forms plus whether the
+        // graph was left unresolved within the bound.
+        let (states, truncated) = reachable_reporting(&candidate, self.bound);
+
+        // If exploration did not settle (a reducible state remained on the
+        // frontier, or a non-terminating cycle), we cannot certify robust
+        // annihilation: conservatively decline. This is what keeps `synchronize`
+        // an honest UNDER-approximation — a candidate with one run to `0` but
+        // another run still live at the bound is not reported as annihilating.
+        if truncated {
+            return false;
+        }
+
+        // Every reduction settled within the bound: annihilation holds iff at
+        // least one normal form is `0` and none is anything else. `0`
+        // canonicalizes to `Proc::Zero`.
+        let mut saw_zero = false;
+        for state in states {
+            if is_normal_form(&state) {
+                if state == Proc::Zero {
+                    saw_zero = true;
+                } else {
+                    // A reachable non-`0` normal form: not a robust annihilation.
+                    return false;
+                }
+            }
+        }
+        saw_zero
+    }
+}
+
 /// Flatten `p` into its active parallel components, dropping units `0` and
 /// splicing nested parallels (§2.3), without descending under any prefix.
 fn parallel_components(p: &Proc, out: &mut Vec<Proc>) {
@@ -67,16 +230,19 @@ fn parallel_components(p: &Proc, out: &mut Vec<Proc>) {
     }
 }
 
-/// Every Comm redex of `p`, as `(firing channel, message ⌜Q⌝, reduct)` triples,
-/// without deduplication.
+/// Every Comm redex of `p` under the synchronization rule `sync`, as
+/// `(firing channel, message ⌜Q⌝, reduct)` triples, without deduplication.
 ///
 /// A redex is a lift `x0⟨|Q|⟩` and an input `x1(y).P` among the active parallel
-/// components with `x0 ≡N x1`; it reduces to `P{⌜Q⌝/y}` (semantic substitution,
-/// §2.7), left in parallel with the untouched components. The message `⌜Q⌝` is
-/// the reified name the receiver binds to `y`. The firing channel and message are
-/// returned raw; callers wanting stable labels pass them through
-/// [`canonicalize_name`]. Reducts are nominal.
-fn redexes(p: &Proc) -> Vec<(Name, Name, Proc)> {
+/// components with `sync.synchronize(x0, x1)`; it reduces to `P{⌜Q⌝/y}` (semantic
+/// substitution, §2.7), left in parallel with the untouched components. The
+/// message `⌜Q⌝` is the reified name the receiver binds to `y`. The firing
+/// channel and message are returned raw; callers wanting stable labels pass them
+/// through [`canonicalize_name`]. Reducts are nominal.
+///
+/// With `sync = &`[`NameEquiv`] the guard is exactly `name_equiv(x0, x1)`, so
+/// this reproduces the standard `Comm` rule (§2.8).
+pub fn redexes_with<S: SyncRule>(p: &Proc, sync: &S) -> Vec<(Name, Name, Proc)> {
     let mut comps = Vec::new();
     parallel_components(p, &mut comps);
 
@@ -97,7 +263,7 @@ fn redexes(p: &Proc) -> Vec<(Name, Name, Proc)> {
             else {
                 continue;
             };
-            if !name_equiv(x0, x1) {
+            if !sync.synchronize(x0, x1) {
                 continue;
             }
 
@@ -125,9 +291,19 @@ fn redexes(p: &Proc) -> Vec<(Name, Name, Proc)> {
 /// Each reduct is a nominal term. `p` is empty of redexes — i.e. in normal form
 /// — iff the returned vector is empty (see [`is_normal_form`]).
 pub fn step(p: &Proc) -> Vec<Proc> {
+    step_with(p, &NameEquiv)
+}
+
+/// All one-step reducts of `p` under the synchronization rule `sync`,
+/// deduplicated up to `≡`.
+///
+/// The generic form of [`step`], which is exactly `step_with(p, &NameEquiv)`.
+/// Pass [`Annihilation`] to reduce under the §2.8 Comm-annihilation family
+/// instead. Each reduct is a nominal term.
+pub fn step_with<S: SyncRule>(p: &Proc, sync: &S) -> Vec<Proc> {
     let mut succ = Vec::new();
     let mut seen = HashSet::new();
-    for (_label, _message, cand) in redexes(p) {
+    for (_label, _message, cand) in redexes_with(p, sync) {
         if seen.insert(canonicalize(&cand)) {
             succ.push(cand);
         }
@@ -144,9 +320,20 @@ pub fn step(p: &Proc) -> Vec<Proc> {
 /// `≡N`-canonical message it transmitted (the reified name `⌜Q⌝` bound by the
 /// receiver). Reducts are nominal so they can be stepped again.
 pub fn step_labeled(p: &Proc) -> Vec<Step> {
+    step_labeled_with(p, &NameEquiv)
+}
+
+/// All one-step transitions of `p` as [`Step`]s under the synchronization rule
+/// `sync`, deduplicated up to `≡` on channel, message, and target.
+///
+/// The generic form of [`step_labeled`], which is exactly
+/// `step_labeled_with(p, &NameEquiv)`. Labels ([`channel`](Step::channel),
+/// [`message`](Step::message)) are `≡N`-canonical regardless of `sync`; only
+/// *which* redexes fire depends on `sync`. Reducts are nominal.
+pub fn step_labeled_with<S: SyncRule>(p: &Proc, sync: &S) -> Vec<Step> {
     let mut succ = Vec::new();
     let mut seen = HashSet::new();
-    for (label, message, cand) in redexes(p) {
+    for (label, message, cand) in redexes_with(p, sync) {
         let channel = canonicalize_name(&label);
         let message = canonicalize_name(&message);
         if seen.insert((channel.clone(), message.clone(), canonicalize(&cand))) {
@@ -173,6 +360,25 @@ pub fn is_normal_form(p: &Proc) -> bool {
 /// The frontier is stepped as nominal representatives while canonical forms
 /// serve as the visited-set keys.
 pub fn reachable(start: &Proc, max_steps: usize) -> Vec<Proc> {
+    reachable_reporting(start, max_steps).0
+}
+
+/// Bounded reachability, additionally reporting whether the exploration was
+/// **truncated** — i.e. whether the reduction graph within `max_steps` was left
+/// unresolved.
+///
+/// Returns `(states, truncated)` where `states` is exactly what [`reachable`]
+/// returns (canonical forms), and `truncated` is `true` iff some state on the
+/// final frontier still has a `Comm` redex. That covers both ways exploration
+/// can fail to settle: hitting the depth `max_steps` with reducible states still
+/// on the frontier, and converging on a cycle of already-seen states that never
+/// reach a normal form. `truncated == false` therefore certifies that every
+/// reduction sequence from `start` reached a normal form within the bound; this
+/// is what lets [`Annihilation`] soundly under-approximate annihilation.
+///
+/// For the `max_steps == 0` base case the frontier is `{start}` itself, so a
+/// `start` already in normal form (e.g. `0`) is *not* truncated.
+fn reachable_reporting(start: &Proc, max_steps: usize) -> (Vec<Proc>, bool) {
     let mut seen: HashSet<Proc> = HashSet::new();
     let mut states: Vec<Proc> = Vec::new();
 
@@ -197,5 +403,10 @@ pub fn reachable(start: &Proc, max_steps: usize) -> Vec<Proc> {
         }
         frontier = next;
     }
-    states
+
+    // The exploration is truncated iff some final-frontier state is still
+    // reducible: either we exhausted `max_steps` with live states remaining, or
+    // we stopped on states whose only successors were already seen (a cycle).
+    let truncated = frontier.iter().any(|p| !step(p).is_empty());
+    (states, truncated)
 }
