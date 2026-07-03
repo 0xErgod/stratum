@@ -19,6 +19,9 @@
 //!   (§2.3) and name equivalence `≡N` (§2.4).
 //! * [`reduce`] — one-step reduction (the `Comm` rule, §2.8) and bounded
 //!   reachability, the seed of the trace LTS.
+//! * [`labelled`] — the labelled operational semantics: visible input / output
+//!   actions and `τ` (following Lybech 2022), for open-system reasoning. Its
+//!   `τ` sub-relation coincides with the `Comm` reduction of [`reduce`].
 //!
 //! Everything above this — the trace LTS, field measurability, and the
 //! temporal-logic checker — arrives in later milestones and builds on the
@@ -41,11 +44,13 @@
 //! ```
 
 pub mod congruence;
+pub mod labelled;
 pub mod reduce;
 pub mod subst;
 pub mod term;
 
 pub use congruence::{canonicalize, canonicalize_name, name_equiv, structurally_congruent};
+pub use labelled::{tau_transitions, transitions, Abstraction, Action, Transition};
 pub use reduce::{
     is_normal_form, reachable, redexes_with, step, step_labeled, step_labeled_with, step_with,
     Annihilation, NameEquiv, Step, SyncRule,
