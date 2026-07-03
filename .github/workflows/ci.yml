@@ -54,6 +54,9 @@ jobs:
           # Rocq 9.0 ships the `rocq` driver, not the `coqc`/`coqchk` aliases.
           custom_script: |
             {{before_script}}
+            startGroup "fix workspace permissions"
+              sudo chown -R "$(whoami):" .
+            endGroup
             startGroup "rocq compile — Rho.v"
               ( cd proofs && rocq compile -Q . Stratum Rho.v )
             endGroup
