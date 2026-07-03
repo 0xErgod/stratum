@@ -39,8 +39,8 @@ pub mod check;
 pub mod formula;
 
 pub use check::{
-    check, check_epistemic, counterexample, holds, holds_epistemic, satisfies, shortest_path,
-    witness, Agents,
+    check, check_epistemic, counterexample, holds, holds_checked, holds_epistemic, satisfies,
+    satisfies_checked, shortest_path, witness, Agents, Checked,
 };
 pub use formula::{
     af, ag, and, boxm, can, diamond, ef, eg, ex, ff, knows, mu, neg, nu, or, possible, prop, tt,

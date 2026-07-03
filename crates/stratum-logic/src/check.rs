@@ -189,6 +189,60 @@ pub fn holds_epistemic<L: Fn(&str, &Proc) -> bool>(
     check_epistemic(lts, formula, label, agents)[lts.initial()]
 }
 
+/// A model-checking result together with whether it is *definitive*.
+///
+/// The μ-calculus checker runs over the bounded reachable fragment the LTS
+/// explored. When the LTS was fully explored (`!Lts::is_truncated()`), the
+/// reachable state space is finite and complete, so the verdict is **exact**.
+/// When exploration was truncated at the state bound, the verdict is only about
+/// the explored fragment (`exact == false`).
+///
+/// Note the sound asymmetry for the run extractors: a [`witness`] or
+/// [`counterexample`] that returns `Some` is definitive even under truncation
+/// (a run it found is genuinely present); only their `None` is relative to the
+/// explored fragment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Checked {
+    /// Whether the formula holds at the queried state, over the explored LTS.
+    pub holds: bool,
+    /// `true` if the LTS was fully explored, so `holds` is definitive; `false`
+    /// if exploration was truncated, so `holds` is only about the fragment.
+    pub exact: bool,
+}
+
+impl Checked {
+    /// Whether this is a definitive verdict (the LTS was fully explored).
+    pub fn is_exact(&self) -> bool {
+        self.exact
+    }
+}
+
+/// Whether the initial state satisfies `formula`, paired with whether the
+/// verdict is exact (the LTS was fully explored) — see [`Checked`].
+pub fn holds_checked<L: Fn(&str, &Proc) -> bool>(
+    lts: &Lts,
+    formula: &Formula,
+    label: &L,
+) -> Checked {
+    Checked {
+        holds: holds(lts, formula, label),
+        exact: !lts.is_truncated(),
+    }
+}
+
+/// Whether state `i` satisfies `formula`, paired with exactness — see [`Checked`].
+pub fn satisfies_checked<L: Fn(&str, &Proc) -> bool>(
+    lts: &Lts,
+    i: usize,
+    formula: &Formula,
+    label: &L,
+) -> Checked {
+    Checked {
+        holds: satisfies(lts, i, formula, label),
+        exact: !lts.is_truncated(),
+    }
+}
+
 /// A shortest labelled path from the initial state to some state satisfying
 /// `pred`, as `(firing channel, state)` steps. `Some(vec![])` if the initial
 /// state already satisfies `pred`; `None` if no such state is reachable.
