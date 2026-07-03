@@ -1,0 +1,33 @@
+Z | Z | 
+(D (Q Z)) | (D (Q Z)) | 
+(L (Q Z) Z) | (L (Q Z) Z) | 
+(P Z Z) | Z | 
+(P (D (Q Z)) Z) | (D (Q Z)) | 
+(P Z (D (Q Z))) | (D (Q Z)) | 
+(P (D (Q Z)) (D (Q Z))) | (P (D (Q Z)) (D (Q Z))) | 
+(P (L (Q Z) Z) (D (Q Z))) | (P (L (Q Z) Z) (D (Q Z))) | 
+(P (P (D (Q Z)) Z) (L (Q Z) Z)) | (P (L (Q Z) Z) (D (Q Z))) | 
+(P (P (L (Q Z) Z) (D (Q Z))) (P Z (D (Q Z)))) | (P (L (Q Z) Z) (P (D (Q Z)) (D (Q Z)))) | 
+(P (D (Q (P Z Z))) Z) | (D (Q Z)) | 
+(L (Q Z) (P Z (P Z (D (Q Z))))) | (L (Q Z) (D (Q Z))) | 
+(P (D (Q Z)) (P (L (Q Z) Z) (P Z (D (Q (L (Q Z) Z)))))) | (P (L (Q Z) Z) (P (D (Q Z)) (D (Q (L (Q Z) Z))))) | 
+(D (Q (D (Q Z)))) | (D (Q Z)) | 
+(D (Q (D (Q Z)))) | (D (Q Z)) | 
+(L (Q (D (Q Z))) Z) | (L (Q Z) Z) | 
+(D (Q (D (Q (D (Q Z)))))) | (D (Q Z)) | 
+(D (Q (P (D (Q Z)) Z))) | (D (Q Z)) | 
+(I (Q Z) (D (V 0))) | (I (Q Z) (D (V 0))) | 
+(I (Q Z) Z) | (I (Q Z) Z) | 
+(I (Q Z) (I (Q Z) (P (D (V 0)) (D (V 1))))) | (I (Q Z) (I (Q Z) (P (D (V 0)) (D (V 1))))) | 
+(I (Q Z) (I (V 0) (D (V 1)))) | (I (Q Z) (I (V 0) (D (V 1)))) | 
+(I (Q Z) (P (D (V 0)) (L (Q Z) Z))) | (I (Q Z) (P (L (Q Z) Z) (D (V 0)))) | 
+(P (L (Q Z) Z) (I (Q Z) (D (V 0)))) | (P (I (Q Z) (D (V 0))) (L (Q Z) Z)) | Z
+(P (L (Q Z) Z) (I (Q Z) Z)) | (P (I (Q Z) Z) (L (Q Z) Z)) | Z
+(P (L (Q Z) (L (Q Z) Z)) (I (Q Z) (D (V 0)))) | (P (I (Q Z) (D (V 0))) (L (Q Z) (L (Q Z) Z))) | (L (Q Z) Z)
+(P (L (Q (D (Q Z))) Z) (I (Q Z) (D (V 0)))) | (P (I (Q Z) (D (V 0))) (L (Q Z) Z)) | Z
+(P (L (Q Z) (D (Q Z))) (I (Q Z) (D (V 0)))) | (P (I (Q Z) (D (V 0))) (L (Q Z) (D (Q Z)))) | (D (Q Z))
+(P (I (Q Z) (D (V 0))) (L (Q Z) Z)) | (P (I (Q Z) (D (V 0))) (L (Q Z) Z)) | Z
+(P (P (L (Q Z) Z) (I (Q Z) Z)) (P (L (Q Z) Z) (I (Q Z) Z))) | (P (I (Q Z) Z) (P (I (Q Z) Z) (P (L (Q Z) Z) (L (Q Z) Z)))) | (P (I (Q Z) Z) (L (Q Z) Z))
+(P (L (Q Z) Z) (P (I (Q Z) (D (V 0))) (I (Q Z) Z))) | (P (I (Q Z) Z) (P (I (Q Z) (D (V 0))) (L (Q Z) Z))) | (I (Q Z) Z) ;; (I (Q Z) (D (V 0)))
+(P (P (L (Q Z) Z) (D (Q Z))) (I (Q Z) (D (V 0)))) | (P (I (Q Z) (D (V 0))) (P (L (Q Z) Z) (D (Q Z)))) | (D (Q Z))
+(P (L (Q Z) Z) (P (I (Q Z) (D (V 0))) (L (Q Z) Z))) | (P (I (Q Z) (D (V 0))) (P (L (Q Z) Z) (L (Q Z) Z))) | (L (Q Z) Z)
