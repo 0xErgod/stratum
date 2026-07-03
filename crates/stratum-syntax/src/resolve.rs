@@ -32,6 +32,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use stratum_core::canonicalize_name;
 use stratum_core::term::{drop_, fresh_sym, lift, quote, zero, Name, Proc};
 
 use crate::ast::{Args, Block, Def, Pos, S};
@@ -116,6 +117,11 @@ pub(crate) struct Resolver<'a> {
     counter: u64,
     /// The global base environment: top-level `new` names (set once).
     global: Env,
+    /// Readable-name dictionary: the canonical form of each top-level `new`
+    /// name (and each name-shaped `def` alias) mapped back to its source
+    /// identifier. Populated during [`Resolver::resolve_program`] and
+    /// [`Resolver::collect_aliases`]; consumed by the alias-folding printer.
+    aliases: HashMap<Name, String>,
 }
 
 /// Build a resolution error at a position.
@@ -134,6 +140,7 @@ impl<'a> Resolver<'a> {
             defs,
             counter: 0,
             global: Env::default(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -146,10 +153,51 @@ impl<'a> Resolver<'a> {
         let mut env = Env::default();
         for (name, _) in &program.news {
             let g = self.mint();
+            // Record the readable alias: the canonical ground name folds back
+            // to this source identifier. First declaration wins on collision.
+            self.aliases
+                .entry(canonicalize_name(&g))
+                .or_insert_with(|| name.clone());
             env = env.extend(name.clone(), Binding::NewName(g));
         }
         self.global = env.clone();
         self.resolve_proc(&program.term, &env)
+    }
+
+    /// Extract the readable-name dictionary gathered during resolution.
+    ///
+    /// Beyond the top-level `new` names (recorded while resolving the program),
+    /// this eagerly resolves every name-shaped `def` alias — one whose body is a
+    /// bare name `@P` (possibly via other aliases) and takes no arguments — so a
+    /// channel that spells out to such an alias can fold back to its identifier.
+    /// Process-shaped aliases and macros have no single canonical name and are
+    /// skipped; a name-shaped alias that fails to resolve is silently ignored,
+    /// since alias collection must never turn a successful parse into an error.
+    /// Call after [`Resolver::resolve_program`], when `global` is fixed.
+    pub(crate) fn collect_aliases(&mut self) -> HashMap<Name, String> {
+        // Collect candidate alias names first to avoid borrowing `self.defs`
+        // across the resolving calls that borrow `self` mutably.
+        let candidates: Vec<String> = self
+            .defs
+            .iter()
+            .filter_map(|(name, def)| match def {
+                Def::Alias(block) if block.term.is_name_shaped() => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        for name in candidates {
+            // Clone the body out of `self.defs` so the resolve call may borrow
+            // `self` mutably (it advances the mint counter for any local `new`).
+            if let Some(Def::Alias(block)) = self.defs.get(&name).cloned() {
+                let base = self.global.clone();
+                if let Ok(Slot::Name(n)) = self.resolve_block(&block, &base, Sort::Name) {
+                    self.aliases
+                        .entry(canonicalize_name(&n))
+                        .or_insert_with(|| name.clone());
+                }
+            }
+        }
+        std::mem::take(&mut self.aliases)
     }
 
     /// Resolve a single name (used by [`crate::parse_name`]).
