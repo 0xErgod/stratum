@@ -50,7 +50,10 @@ pub mod subst;
 pub mod term;
 
 pub use congruence::{canonicalize, canonicalize_name, name_equiv, structurally_congruent};
-pub use labelled::{tau_transitions, transitions, Abstraction, Action, Transition};
+pub use labelled::{
+    canonical_tau_transitions, canonical_transitions, tau_transitions, transitions, Abstraction,
+    Action, Transition,
+};
 pub use reduce::{
     is_normal_form, reachable, redexes_with, step, step_labeled, step_labeled_with, step_with,
     Annihilation, NameEquiv, Step, SyncRule,

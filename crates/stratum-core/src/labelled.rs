@@ -70,7 +70,9 @@
 //! `step_labeled` are left **unchanged**; this module is purely additive, and
 //! the test suite pins the two `τ` relations equal over many processes.
 
-use crate::congruence::{canonicalize_name, name_equiv};
+use std::collections::HashSet;
+
+use crate::congruence::{canonicalize, canonicalize_name, name_equiv};
 use crate::subst::subst_semantic;
 use crate::term::{Name, Proc};
 
@@ -117,6 +119,19 @@ impl Action {
 /// again. Because binder symbols are globally unique, any parallel siblings that
 /// the structural rule folded into `P` are automatically `y`-free, so
 /// instantiation cannot capture.
+///
+/// # Precondition (capture safety)
+///
+/// [`instantiate`](Abstraction::instantiate) substitutes for `y` across the
+/// *whole* folded body `P` — the original input continuation together with the
+/// untouched parallel siblings the structural rule carried in. Its
+/// non-capture rests on those siblings being `y`-free. That holds for any
+/// **closed** term (see [`Proc::is_closed`](crate::term::Proc::is_closed)) built
+/// with the [`input`](crate::term::input) constructor: every binder draws a
+/// globally-unique [`fresh_sym`](crate::term::fresh_sym), so `y` cannot already
+/// occur in a sibling that was written independently. This is the same
+/// invariant [`crate::reduce`] and [`crate::subst`] rely on to omit
+/// α-renaming; the labelled semantics inherits rather than weakens it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Abstraction {
     bound: u64,
@@ -256,8 +271,13 @@ fn par_without(comps: &[Proc], exclude: &[usize]) -> Proc {
 ///   with `Comm` / [`step_labeled`](crate::reduce::step_labeled).
 ///
 /// Labels are `≡N`-canonical; residuals and abstraction bodies are nominal. The
-/// list is **not** deduplicated (like `redexes_with`): callers that want states
-/// up to `≡` canonicalize the residuals themselves.
+/// list is **not** deduplicated (like `redexes_with`, and unlike
+/// [`step_labeled`](crate::reduce::step_labeled)): two `≡`-identical parallel
+/// components — e.g. `x⟨|0|⟩ | x⟨|0|⟩` — produce two identical output edges, and
+/// likewise for `τ`. Callers that want the same edge *set* as the reduction LTS
+/// (up to `≡` on the residual) should use [`canonical_transitions`] /
+/// [`canonical_tau_transitions`], which deduplicate exactly as `step_labeled`
+/// does.
 pub fn transitions(p: &Proc) -> Vec<Transition> {
     let mut comps = Vec::new();
     parallel_components(p, &mut comps);
@@ -346,6 +366,80 @@ pub fn transitions(p: &Proc) -> Vec<Transition> {
 /// property pinned by the `tau_matches_comm` test.
 pub fn tau_transitions(p: &Proc) -> Vec<Transition> {
     transitions(p)
+        .into_iter()
+        .filter(Transition::is_tau)
+        .collect()
+}
+
+/// The `≡`-canonical dedup key of a transition.
+///
+/// Two transitions collapse iff they agree on kind, `≡N`-canonical channel,
+/// `≡N`-canonical message (outputs / `τ` only), and the `≡`-canonical form of
+/// their residual. For an input the residual is the abstraction `(y)P`, keyed by
+/// canonicalizing it as an `Input` on a fixed dummy channel so that
+/// α-equivalent abstractions (and only those) share a key. This is exactly the
+/// key [`step_labeled`](crate::reduce::step_labeled) uses for `τ`, extended to
+/// the visible actions.
+fn canonical_key(t: &Transition) -> (u8, Name, Option<Name>, Proc) {
+    match t {
+        Transition::Out {
+            chan,
+            msg,
+            residual,
+        } => (0, chan.clone(), Some(msg.clone()), canonicalize(residual)),
+        Transition::In { chan, abs } => {
+            // Canonicalize the abstraction body under its binder by wrapping it
+            // as an Input on a fixed dummy channel (⌜0⌝); the shared dummy makes
+            // the key depend only on the abstraction up to α.
+            let wrapped = Proc::Input {
+                chan: Name::Quote(Box::new(Proc::Zero)),
+                bound: abs.bound(),
+                body: Box::new(abs.body().clone()),
+            };
+            (1, chan.clone(), None, canonicalize(&wrapped))
+        }
+        Transition::Tau {
+            channel,
+            message,
+            reduct,
+        } => (
+            2,
+            channel.clone(),
+            Some(message.clone()),
+            canonicalize(reduct),
+        ),
+    }
+}
+
+/// All labelled transitions of `p`, **deduplicated up to `≡`** — the same edge
+/// set the reduction LTS would see.
+///
+/// Identical to [`transitions`] except that transitions with the same
+/// [`canonical_key`] (same kind, `≡N`-canonical channel/message, and
+/// `≡`-canonical residual/abstraction) are collapsed to one. The retained
+/// representative keeps its **nominal** residual so it can still be stepped.
+/// This is the accessor downstream consumers (e.g. labelled bisimulation)
+/// should prefer when duplicate parallel components would otherwise inflate the
+/// edge set; on the `τ` fragment it yields exactly
+/// [`step_labeled`](crate::reduce::step_labeled)'s deduplicated steps.
+pub fn canonical_transitions(p: &Proc) -> Vec<Transition> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for t in transitions(p) {
+        if seen.insert(canonical_key(&t)) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// Just the `≡`-deduplicated `τ` transitions of `p`.
+///
+/// The `τ` filter of [`canonical_transitions`]; by construction this is exactly
+/// [`step_labeled`](crate::reduce::step_labeled)'s step set, re-presented as
+/// [`Transition::Tau`]s.
+pub fn canonical_tau_transitions(p: &Proc) -> Vec<Transition> {
+    canonical_transitions(p)
         .into_iter()
         .filter(Transition::is_tau)
         .collect()

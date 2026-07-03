@@ -8,7 +8,10 @@
 use std::collections::BTreeSet;
 
 use stratum_core::congruence::canonicalize;
-use stratum_core::labelled::{tau_transitions, transitions, Action, Transition};
+use stratum_core::labelled::{
+    canonical_tau_transitions, canonical_transitions, tau_transitions, transitions, Action,
+    Transition,
+};
 use stratum_core::reduce::step_labeled;
 use stratum_core::term::{drop_, input, lift, output, par, quote, zero, Name, Proc};
 
@@ -332,10 +335,99 @@ fn tau_matches_comm_on_fixed_processes() {
             lift(y.clone(), zero()),
             input(y.clone(), drop_),
         ]),
+        // quote-drop channel match: ⌜0⌝ vs ⌜*⌜0⌝⌝ are ≡N-EQUAL (⌜*x⌝ ≡N x, §2.4)
+        // but syntactically DISTINCT. The lift fires with the input despite the
+        // channels not being identical, exercising the interesting part of the
+        // name_equiv guard — τ must still equal Comm here.
+        par([
+            lift(quote(zero()), zero()),
+            input(quote(drop_(quote(zero()))), drop_),
+        ]),
     ];
     for (i, p) in cases.iter().enumerate() {
         assert_eq!(tau_set(p), comm_set(p), "τ ≠ Comm on fixed case {i}: {p:?}");
     }
+}
+
+/// The quote-drop channel case in isolation: a lift on `⌜0⌝` and an input on
+/// the `≡N`-equal but syntactically different `⌜*⌜0⌝⌝` DO synchronize, and τ
+/// coincides with Comm. This pins the non-trivial `name_equiv` guard that the
+/// `chan(k)` pool (all syntactically canonical) never reaches.
+#[test]
+fn tau_matches_comm_on_quote_drop_channel_match() {
+    let sender_chan = quote(zero()); // ⌜0⌝
+    let receiver_chan = quote(drop_(quote(zero()))); // ⌜*⌜0⌝⌝ ≡N ⌜0⌝
+                                                     // Sanity: the two channels are ≡N-equal yet syntactically distinct.
+    assert!(stratum_core::name_equiv(&sender_chan, &receiver_chan));
+    assert_ne!(sender_chan, receiver_chan);
+
+    let sys = par([
+        lift(sender_chan, lift(chan(2), zero())),
+        input(receiver_chan, drop_),
+    ]);
+    // A τ actually fires (the guard is not vacuously false).
+    assert_eq!(tau_transitions(&sys).len(), 1);
+    // And it matches Comm exactly.
+    assert_eq!(tau_set(&sys), comm_set(&sys));
+}
+
+#[test]
+fn canonical_transitions_dedup_duplicate_components_like_step_labeled() {
+    let x = chan(0);
+    // Two ≡-identical senders and two ≡-identical receivers: the raw relation
+    // has duplicate output/input edges and duplicate τ edges; the canonical
+    // accessor collapses them exactly as step_labeled does.
+    let sys = par([
+        lift(x.clone(), zero()),
+        lift(x.clone(), zero()),
+        input(x.clone(), drop_),
+        input(x.clone(), drop_),
+    ]);
+
+    // Raw: duplicated edges present.
+    let raw = transitions(&sys);
+    let raw_out = raw
+        .iter()
+        .filter(|t| matches!(t, Transition::Out { .. }))
+        .count();
+    let raw_in = raw
+        .iter()
+        .filter(|t| matches!(t, Transition::In { .. }))
+        .count();
+    assert_eq!(raw_out, 2, "two identical outputs appear twice raw");
+    assert_eq!(raw_in, 2, "two identical inputs appear twice raw");
+
+    // Canonical: one output edge, one input edge.
+    let canon = canonical_transitions(&sys);
+    let c_out = canon
+        .iter()
+        .filter(|t| matches!(t, Transition::Out { .. }))
+        .count();
+    let c_in = canon
+        .iter()
+        .filter(|t| matches!(t, Transition::In { .. }))
+        .count();
+    assert_eq!(c_out, 1, "identical outputs collapse to one canonical edge");
+    assert_eq!(c_in, 1, "identical inputs collapse to one canonical edge");
+
+    // The canonical τ fragment equals step_labeled's deduplicated step set.
+    let canon_tau: BTreeSet<(Name, Name, Proc)> = canonical_tau_transitions(&sys)
+        .into_iter()
+        .map(|t| match t {
+            Transition::Tau {
+                channel,
+                message,
+                reduct,
+            } => (channel, message, canonicalize(&reduct)),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(canon_tau, comm_set(&sys));
+    // And it has exactly step_labeled's cardinality (no duplicate τ edges).
+    assert_eq!(
+        canonical_tau_transitions(&sys).len(),
+        step_labeled(&sys).len()
+    );
 }
 
 /// A random *system*: a top-level parallel of 2..=6 small agents over a shared
