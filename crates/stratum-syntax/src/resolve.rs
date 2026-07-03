@@ -345,7 +345,7 @@ impl<'a> Resolver<'a> {
                 // Parameters bind to the call-site argument fragments together
                 // with the call-site environment (capture-avoiding).
                 let mut env = self.global.clone();
-                for (param, arg) in params.iter().zip(ordered.into_iter()) {
+                for (param, arg) in params.iter().zip(ordered) {
                     env = env.extend(
                         param.clone(),
                         Binding::Param(Rc::new(arg.clone()), call_env.clone()),
