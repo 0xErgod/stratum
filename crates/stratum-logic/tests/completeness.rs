@@ -6,7 +6,7 @@ use stratum_core::term::{drop_, input, lift, output, par, quote, zero};
 use stratum_core::{Name, Proc};
 use stratum_lts::Lts;
 use stratum_logic::examples::emits;
-use stratum_logic::{ef, holds_checked, prop, witness};
+use stratum_logic::{counterexample, ef, holds_checked, neg, prop, satisfies_checked, witness};
 
 /// The observable `goal` channel `@(@0!(0))`.
 fn goal() -> Name {
@@ -51,7 +51,7 @@ fn finite_verdict_is_exact() {
 
     let v = holds_checked(&lts, &ef(prop("goal")), &label);
     assert!(v.holds, "goal is reachable");
-    assert!(v.is_exact(), "a fully-explored LTS gives a definitive verdict");
+    assert!(v.exact, "a fully-explored LTS gives a definitive verdict");
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn truncated_verdict_is_not_exact() {
 
     let v = holds_checked(&lts, &ef(prop("goal")), &label);
     assert!(v.holds, "goal is reached within the explored fragment");
-    assert!(!v.is_exact(), "a truncated LTS verdict is only about the fragment");
+    assert!(!v.exact, "a truncated LTS verdict is only about the fragment");
 }
 
 #[test]
@@ -75,4 +75,39 @@ fn witness_is_sound_under_truncation() {
     // The last state of the run genuinely emits on goal.
     let (_, last) = *run.last().unwrap();
     assert!(emits(lts.state(last), &goal()));
+}
+
+#[test]
+fn satisfies_checked_reports_exactness_per_state() {
+    // Finite system: exactly one (terminal) state emits goal; the verdict there
+    // is definitive.
+    let lts = Lts::explore(&finite_system(), 100);
+    assert!(!lts.is_truncated());
+    let goal_state = (0..lts.num_states())
+        .find(|&i| emits(lts.state(i), &goal()))
+        .expect("some state emits goal");
+    let v = satisfies_checked(&lts, goal_state, &prop("goal"), &label);
+    assert!(v.holds && v.exact);
+
+    // Truncated system: exactness is false even for a state-local proposition.
+    let tr = Lts::explore(&replicating_system(), 4);
+    assert!(tr.is_truncated());
+    let w = satisfies_checked(&tr, tr.initial(), &prop("goal"), &label);
+    assert!(!w.exact);
+}
+
+#[test]
+fn counterexample_to_safety_is_sound_under_truncation() {
+    // A counterexample to a *safety* (universal) invariant found in the fragment
+    // is a real bad run, definitive despite truncation. Here the invariant
+    // "never goal" is violated because goal is reached.
+    let lts = Lts::explore(&replicating_system(), 4);
+    assert!(lts.is_truncated());
+    let cex = counterexample(&lts, &neg(prop("goal")), &label)
+        .expect("the safety invariant is violated within the fragment");
+    let (_, bad) = *cex.last().unwrap();
+    assert!(
+        emits(lts.state(bad), &goal()),
+        "the counterexample ends at a real goal-emitting state"
+    );
 }

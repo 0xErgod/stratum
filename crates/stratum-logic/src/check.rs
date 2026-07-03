@@ -197,10 +197,17 @@ pub fn holds_epistemic<L: Fn(&str, &Proc) -> bool>(
 /// When exploration was truncated at the state bound, the verdict is only about
 /// the explored fragment (`exact == false`).
 ///
-/// Note the sound asymmetry for the run extractors: a [`witness`] or
-/// [`counterexample`] that returns `Some` is definitive even under truncation
-/// (a run it found is genuinely present); only their `None` is relative to the
-/// explored fragment.
+/// The run extractors stay sound only within their intended polarity: the *run*
+/// they return is always a genuine sequence of real reductions, but its
+/// endpoint's satisfaction of the queried formula is preserved under truncation
+/// only for the polarity each targets — a [`witness`] for a *reachability*
+/// (existential) goal, and a [`counterexample`] to a *safety* (universal)
+/// invariant. For a universal `witness` goal, or a non-safety `counterexample`
+/// invariant, a `Some` may be spurious under truncation, since exploration drops
+/// the edges out of boundary states.
+///
+/// In `stratum-equiv` the analogous distinction is carried by
+/// `Verdict::Inconclusive`, returned when either system's exploration truncates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Checked {
     /// Whether the formula holds at the queried state, over the explored LTS.
@@ -208,13 +215,6 @@ pub struct Checked {
     /// `true` if the LTS was fully explored, so `holds` is definitive; `false`
     /// if exploration was truncated, so `holds` is only about the fragment.
     pub exact: bool,
-}
-
-impl Checked {
-    /// Whether this is a definitive verdict (the LTS was fully explored).
-    pub fn is_exact(&self) -> bool {
-        self.exact
-    }
 }
 
 /// Whether the initial state satisfies `formula`, paired with whether the
