@@ -111,9 +111,22 @@
 //! interaction (a `Comm` on that channel) that a fresh name cannot. This is the
 //! classic finite-branching result for late/open bisimulation (Sangiorgi–Walker,
 //! *The π-calculus*, ch. on open/late bisimulation; the finite-support / nominal
-//! argument of Pitts). The fresh `⋄` is built as a name of strictly greater quote
-//! depth than any relevant name (see [`fresh_name`]), which guarantees its `≡N`
-//! distinctness.
+//! argument of Pitts).
+//!
+//! Crucially, the ρ-calculus has **no name-inequality observation**: `Comm`
+//! fires only on `≡N`-*equality* of channels, and the visible `In`/`Out` actions
+//! a term offers are present regardless of *which* name was received. So
+//! collapsing every unmentioned name onto a single representative `⋄` can only
+//! ever reveal an equality-triggered `Comm` that some *other* unmentioned name
+//! would not — it can never mask a distinction between two processes. Hence any
+//! imprecision from the finite basis errs **finer** (it may distinguish a shade
+//! too eagerly), which is exactly the safe side for the certified
+//! labelled ⟹ barbed direction: a finer labelled verdict still soundly implies
+//! barbed equivalence.
+//!
+//! The fresh `⋄` is built as a name whose *canonical* quote depth strictly
+//! exceeds that of every relevant name (see [`fresh_name`]); a defensive `≡N`
+//! re-check then makes its distinctness robust in any case.
 //!
 //! The basis is computed once from *both* systems and shared, and the two
 //! instantiation vectors are aligned index-for-index, so pointwise relation of
@@ -150,6 +163,20 @@ pub fn strong_labelled_bisimilar(p: &Proc, q: &Proc, bound: usize) -> Verdict {
 /// `a`. Thus internal computation is unobservable, exactly as for
 /// [`weak_barbed_bisimilar`](crate::weak_barbed_bisimilar). A positive verdict
 /// certifies (weak) barbed congruence.
+///
+/// # Weak ≡ strong on this ν-free fragment
+///
+/// Do **not** expect this to be strictly coarser than
+/// [`strong_labelled_bisimilar`] here. On the ρ-calculus there is **no
+/// restriction** `ν` to hide a channel, so there is no *pure hidden* `τ`: every
+/// `τ` is a `Comm` whose two reactants — the output `x⟨|Q|⟩` and the input
+/// `x(y).P` — are each *independently observable* as `Out`/`In` actions. A
+/// process can therefore never weakly discard its `τ` step without also losing
+/// visible actions, so weak and strong labelled bisimilarity **coincide** on this
+/// fragment. The weak mode still differs *operationally* (it is the right thing
+/// once one adds restriction, and it exercises the `τ`-saturation machinery), but
+/// it will not yield a coarser verdict than the strong mode on any closed
+/// ρ-term.
 ///
 /// Exploration is bounded by `bound` distinct states; truncation yields
 /// [`Verdict::Inconclusive`].
@@ -519,10 +546,13 @@ fn collect_name(n: &Name, out: &mut BTreeSet<Name>) {
 /// A fresh name, `≡N`-distinct from every name in `existing`.
 ///
 /// Built as a name whose quote depth strictly exceeds that of every relevant
-/// name (a "quote tower" `⌜⌜…⌜0⌝⟨|0|⟩…⌝⟨|0|⟩⌝`), which forces `≡N`-distinctness
-/// since name equivalence preserves quote depth. A defensive loop deepens further
-/// on the vanishingly unlikely event of a collision, so the result is always
-/// fresh.
+/// name (a "quote tower" `⌜⌜…⌜0⌝⟨|0|⟩…⌝⟨|0|⟩⌝`), which makes an `≡N` collision
+/// implausible. Note that `≡N` does **not** in general preserve quote depth —
+/// e.g. `⌜*x⌝ ≡N x` lowers it — so the depth gap is only a cheap first cut, not a
+/// proof of distinctness. The distinctness guarantee comes instead from the
+/// defensive `≡N` re-check loop below, which deepens the candidate until it is
+/// genuinely inequivalent to every name in `existing`; that loop is what makes
+/// the result robustly fresh regardless of any depth-collapsing congruence.
 fn fresh_name(existing: &[Name]) -> Name {
     let max_depth = existing.iter().map(Name::quote_depth).max().unwrap_or(0);
     // Build a process of quote depth `max_depth + 1`; its quote then has depth
@@ -586,13 +616,15 @@ mod tests {
     }
 
     #[test]
-    fn weak_absorbs_matching_tau() {
-        // Weak matching lets the defender answer a τ by staying put. Here Q can
-        // do an internal τ (the a-relay) but ALSO offers everything P does, and
-        // the τ-reduct is weakly indistinguishable from Q's non-τ behaviour on
-        // the observed structure — a case exercising the τ* defender move.
-        // (Kept as a self-comparison guard: weak bisim is reflexive even in the
-        // presence of τ transitions.)
+    fn weak_reflexive_with_tau() {
+        // Weak matching lets the defender answer a τ by staying put, so this
+        // exercises the τ* defender move on a term that HAS a τ transition (the
+        // a-relay). It can only ever check reflexivity, NOT strict weak-coarsening:
+        // on this ν-free fragment weak and strong labelled bisimilarity coincide
+        // (no pure hidden τ — the relay's Out(a,0)/In(a) are always visible), so
+        // there is no pair that weak equates but strong distinguishes to test
+        // here. See the module docs and `weak_labelled_bisimilar` for the
+        // weak ≡ strong argument.
         let a = ch1();
         let q = par([lift(a.clone(), zero()), input(a, |_| zero())]);
         assert!(weak_labelled_bisimilar(&q, &q, 200).is_equivalent());
