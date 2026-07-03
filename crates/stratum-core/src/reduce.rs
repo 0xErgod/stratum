@@ -32,7 +32,7 @@ use std::collections::HashSet;
 
 use crate::congruence::{canonicalize, canonicalize_name, name_equiv};
 use crate::subst::subst_semantic;
-use crate::term::{Name, Proc};
+use crate::term::{drop_, par, Name, Proc};
 
 /// A labelled one-step transition of the trace LTS, as produced by
 /// [`step_labeled`].
@@ -53,6 +53,143 @@ pub struct Step {
     pub reduct: Proc,
 }
 
+/// The synchronization test parameterizing the `Comm` rule (§2.8).
+///
+/// The paper's communication rule fires `x0⟨|Q|⟩ | x1(y).P` exactly when the
+/// sending and receiving channels are a *channel / co-channel pair*. §2.8 leaves
+/// which pairs qualify as a **parameter** of the calculus: the default reading
+/// takes it to be name equivalence `≡N` ([`NameEquiv`]), while §2.8 also names
+/// the *Comm-annihilation* family ([`Annihilation`]), in which two channels pair
+/// up when their dropped processes annihilate.
+///
+/// A `Sync` implementation is the guard the [`redexes_with`] / [`step_with`] /
+/// [`step_labeled_with`] family consults in place of the hard-wired
+/// `name_equiv(x0, x1)`. Implementations should be *symmetric*
+/// (`synchronize(a, b) == synchronize(b, a)`) and *total* (never panic), but the
+/// reducer does not rely on either for memory safety.
+///
+/// The un-suffixed [`step`] / [`step_labeled`] entry points fix this parameter
+/// to [`NameEquiv`], so the default operational semantics — and every existing
+/// caller — is byte-for-byte unchanged.
+pub trait Sync {
+    /// Whether a lift on `sender_chan` may communicate with an input on
+    /// `receiver_chan` — i.e. whether the two are a channel / co-channel pair.
+    fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool;
+}
+
+/// The default synchronization rule: name equivalence `≡N` (§2.4, §2.8).
+///
+/// `synchronize(x0, x1)` is exactly `name_equiv(x0, x1)`, so reducing with
+/// `NameEquiv` reproduces the standard `Comm` rule — and hence the behavior of
+/// the un-suffixed [`step`] and [`step_labeled`] — exactly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NameEquiv;
+
+impl Sync for NameEquiv {
+    #[inline]
+    fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool {
+        name_equiv(sender_chan, receiver_chan)
+    }
+}
+
+/// A bounded, decidable **under-approximation** of the §2.8 Comm-annihilation
+/// family.
+///
+/// # The paper's rule
+///
+/// §2.8 parameterizes the calculus by an alternative to `≡N`: `x0` and `x1` are
+/// a channel / co-channel pair when their dropped processes *annihilate*, i.e.
+///
+/// ```text
+/// *x0 | *x1  →*  0.
+/// ```
+///
+/// The paper's base case is that **`0` is its own co-channel**: with
+/// `x0 = x1 = ⌜0⌝`, dropping runs the quoted code (§2.6), so
+/// `*⌜0⌝ | *⌜0⌝` is `0 | 0 ≡ 0`, which already annihilates in zero steps.
+///
+/// The general condition `*x0 | *x1 →* 0` is a universal reachability property
+/// of the (in general infinite) reduction graph, and is therefore
+/// **undecidable**. Any executable rule must approximate it.
+///
+/// # What this implementation decides
+///
+/// [`Annihilation`] is that approximation, made honest by two design choices:
+///
+/// * **Drops are run.** Because this crate keeps `*⌜P⌝` inert at the process
+///   level (drop only runs under substitution — see [`crate::congruence`]),
+///   the annihilation condition is evaluated on the *dropped* processes: a
+///   channel `⌜P⌝` contributes `P` to the candidate `P0 | P1` (§2.6), while a
+///   still-bound name `x` contributes an inert `*x`. This is what makes the
+///   `⌜0⌝ / ⌜0⌝` base case reduce to `0`.
+/// * **Bounded and robust.** `synchronize(x0, x1)` is `true` iff, exploring
+///   `P0 | P1` with the ordinary reducer to depth [`bound`](Annihilation::bound)
+///   (via [`reachable`]):
+///     1. at least one reachable normal form is `0`, and
+///     2. **every** reachable normal form is `0`.
+///
+///   Condition (2) — *robust* annihilation — rejects channels whose drops
+///   *might* reach `0` but can also get stuck elsewhere, so a `true` verdict
+///   means every maximal reduction observed within the bound annihilates.
+///   If `P0 | P1` has no normal form within the bound (e.g. it only diverges,
+///   or the bound is too small to reach `0`), the verdict is a conservative
+///   `false`.
+///
+/// # Faithfulness
+///
+/// This is a **decidable under-approximation**: `synchronize` may answer `false`
+/// where the undecidable paper condition would answer `true` (the bound was too
+/// small, or a non-`0` stuck state was reachable within the bound), but within
+/// the bound it never reports annihilation for a pair that can get stuck at a
+/// non-`0` normal form. Raising [`bound`](Annihilation::bound) only ever turns
+/// `false` verdicts into `true` for pairs that genuinely annihilate more slowly;
+/// it is opt-in and never affects the default [`NameEquiv`] semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Annihilation {
+    /// The reduction depth to which `*x0 | *x1` is explored. Larger bounds
+    /// recognize slower annihilations at greater cost; `0` only accepts pairs
+    /// that annihilate with no reduction at all (e.g. the `⌜0⌝ / ⌜0⌝` base
+    /// case).
+    pub bound: usize,
+}
+
+/// The process obtained by *running* a dropped name (§2.6): `*⌜P⌝` runs `P`.
+///
+/// A quote `⌜P⌝` yields its body `P`; a still-bound name `x` yields the inert
+/// drop `*x` (which cannot reduce further on its own). This is the honest
+/// process-level reading of `*x` used by [`Annihilation`].
+fn dropped_process(x: &Name) -> Proc {
+    match x {
+        Name::Quote(p) => (**p).clone(),
+        Name::Var(_) => drop_(x.clone()),
+    }
+}
+
+impl Sync for Annihilation {
+    fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool {
+        // *x0 | *x1, with the two drops run to their quoted bodies (§2.6).
+        let candidate = par([
+            dropped_process(sender_chan),
+            dropped_process(receiver_chan),
+        ]);
+
+        // Explore with the ordinary reducer to the configured depth. `reachable`
+        // returns canonical forms; `0` canonicalizes to `Proc::Zero`.
+        let mut saw_zero = false;
+        for state in reachable(&candidate, self.bound) {
+            if is_normal_form(&state) {
+                if state == Proc::Zero {
+                    saw_zero = true;
+                } else {
+                    // A reachable non-`0` normal form: not a robust annihilation.
+                    return false;
+                }
+            }
+        }
+        saw_zero
+    }
+}
+
 /// Flatten `p` into its active parallel components, dropping units `0` and
 /// splicing nested parallels (§2.3), without descending under any prefix.
 fn parallel_components(p: &Proc, out: &mut Vec<Proc>) {
@@ -67,16 +204,19 @@ fn parallel_components(p: &Proc, out: &mut Vec<Proc>) {
     }
 }
 
-/// Every Comm redex of `p`, as `(firing channel, message ⌜Q⌝, reduct)` triples,
-/// without deduplication.
+/// Every Comm redex of `p` under the synchronization rule `sync`, as
+/// `(firing channel, message ⌜Q⌝, reduct)` triples, without deduplication.
 ///
 /// A redex is a lift `x0⟨|Q|⟩` and an input `x1(y).P` among the active parallel
-/// components with `x0 ≡N x1`; it reduces to `P{⌜Q⌝/y}` (semantic substitution,
-/// §2.7), left in parallel with the untouched components. The message `⌜Q⌝` is
-/// the reified name the receiver binds to `y`. The firing channel and message are
-/// returned raw; callers wanting stable labels pass them through
-/// [`canonicalize_name`]. Reducts are nominal.
-fn redexes(p: &Proc) -> Vec<(Name, Name, Proc)> {
+/// components with `sync.synchronize(x0, x1)`; it reduces to `P{⌜Q⌝/y}` (semantic
+/// substitution, §2.7), left in parallel with the untouched components. The
+/// message `⌜Q⌝` is the reified name the receiver binds to `y`. The firing
+/// channel and message are returned raw; callers wanting stable labels pass them
+/// through [`canonicalize_name`]. Reducts are nominal.
+///
+/// With `sync = &`[`NameEquiv`] the guard is exactly `name_equiv(x0, x1)`, so
+/// this reproduces the standard `Comm` rule (§2.8).
+pub fn redexes_with<S: Sync>(p: &Proc, sync: &S) -> Vec<(Name, Name, Proc)> {
     let mut comps = Vec::new();
     parallel_components(p, &mut comps);
 
@@ -97,7 +237,7 @@ fn redexes(p: &Proc) -> Vec<(Name, Name, Proc)> {
             else {
                 continue;
             };
-            if !name_equiv(x0, x1) {
+            if !sync.synchronize(x0, x1) {
                 continue;
             }
 
@@ -125,9 +265,19 @@ fn redexes(p: &Proc) -> Vec<(Name, Name, Proc)> {
 /// Each reduct is a nominal term. `p` is empty of redexes — i.e. in normal form
 /// — iff the returned vector is empty (see [`is_normal_form`]).
 pub fn step(p: &Proc) -> Vec<Proc> {
+    step_with(p, &NameEquiv)
+}
+
+/// All one-step reducts of `p` under the synchronization rule `sync`,
+/// deduplicated up to `≡`.
+///
+/// The generic form of [`step`], which is exactly `step_with(p, &NameEquiv)`.
+/// Pass [`Annihilation`] to reduce under the §2.8 Comm-annihilation family
+/// instead. Each reduct is a nominal term.
+pub fn step_with<S: Sync>(p: &Proc, sync: &S) -> Vec<Proc> {
     let mut succ = Vec::new();
     let mut seen = HashSet::new();
-    for (_label, _message, cand) in redexes(p) {
+    for (_label, _message, cand) in redexes_with(p, sync) {
         if seen.insert(canonicalize(&cand)) {
             succ.push(cand);
         }
@@ -144,9 +294,20 @@ pub fn step(p: &Proc) -> Vec<Proc> {
 /// `≡N`-canonical message it transmitted (the reified name `⌜Q⌝` bound by the
 /// receiver). Reducts are nominal so they can be stepped again.
 pub fn step_labeled(p: &Proc) -> Vec<Step> {
+    step_labeled_with(p, &NameEquiv)
+}
+
+/// All one-step transitions of `p` as [`Step`]s under the synchronization rule
+/// `sync`, deduplicated up to `≡` on channel, message, and target.
+///
+/// The generic form of [`step_labeled`], which is exactly
+/// `step_labeled_with(p, &NameEquiv)`. Labels ([`channel`](Step::channel),
+/// [`message`](Step::message)) are `≡N`-canonical regardless of `sync`; only
+/// *which* redexes fire depends on `sync`. Reducts are nominal.
+pub fn step_labeled_with<S: Sync>(p: &Proc, sync: &S) -> Vec<Step> {
     let mut succ = Vec::new();
     let mut seen = HashSet::new();
-    for (label, message, cand) in redexes(p) {
+    for (label, message, cand) in redexes_with(p, sync) {
         let channel = canonicalize_name(&label);
         let message = canonicalize_name(&message);
         if seen.insert((channel.clone(), message.clone(), canonicalize(&cand))) {
