@@ -51,11 +51,12 @@ jobs:
           # against (see proofs/Rho.v header). coqorg/coq stops at 8.20; the
           # 9.x line lives in the successor image rocq/rocq-prover.
           custom_image: rocq/rocq-prover:9.0.1
+          # Rocq 9.0 ships the `rocq` driver, not the `coqc`/`coqchk` aliases.
           custom_script: |
             {{before_script}}
-            startGroup "coqc — compile Rho.v"
-              ( cd proofs && coqc -Q . Stratum Rho.v )
+            startGroup "rocq compile — Rho.v"
+              ( cd proofs && rocq compile -Q . Stratum Rho.v )
             endGroup
-            startGroup "coqchk — kernel re-validation"
-              ( cd proofs && coqchk -silent -Q . Stratum Stratum.Rho )
+            startGroup "rocq check — kernel re-validation"
+              ( cd proofs && rocq check -silent -Q . Stratum Stratum.Rho )
             endGroup
