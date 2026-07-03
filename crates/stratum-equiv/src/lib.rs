@@ -56,6 +56,9 @@ use std::collections::{BTreeSet, HashMap};
 use stratum_core::{canonicalize_name, name_equiv, Name, Proc};
 use stratum_lts::{format_name, Lts};
 
+pub mod labelled_bisim;
+pub use labelled_bisim::{strong_labelled_bisimilar, weak_labelled_bisimilar};
+
 /// The outcome of an equivalence check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
