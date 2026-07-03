@@ -741,3 +741,486 @@ Qed.
     decidable [nequiv] procedure. *)
 Theorem ndepth_under_quote : forall P, pdepth P < ndepth (quote P).
 Proof. intro P; simpl; apply Nat.lt_succ_diag_r. Qed.
+
+(* ================================================================== *)
+(** * Tier 2 — substitution (§2.5/§2.7), the Comm rule (§2.8), and     *)
+(**     [step] proved sound and complete w.r.t. reduction [→].         *)
+(* ================================================================== *)
+
+From Stdlib Require Import Bool.
+
+(** MODELLING DECISIONS FOR TIER 2 (extending the Tier-1 block above; these
+    mirror `crates/stratum-core/src/{subst,reduce}.rs`).
+
+    - TWO substitutions, exactly as the Rust engine (§2.5 vs §2.7).  Both replace
+      a de-Bruijn binder symbol [y : nat] (the atom [var y]) by a replacement
+      [Name]; neither descends under a [quote] (quotes are IMPERVIOUS, §2.6 — the
+      "static quote"), while both DO descend into a lifted body (the "dynamic
+      quote").  They agree everywhere except on [drop]: SEMANTIC substitution, at
+      a [drop (var y)], RUNS the code — if the replacement is a quote [quote Q] it
+      splices [Q] in place of [*y] (§2.7); if it is still a bound name it becomes a
+      drop of that name.  Mirrors `subst_syntactic`/`subst_semantic`.
+
+    - The input [inp c b] binds the de-Bruijn atom [var 0] in [b] (Tier-1
+      convention, line ~87).  The SAME Tier-1 SCOPE GAP applies: [var n] is an
+      opaque atom and NO binder renumbering / shifting is performed, exactly as in
+      the Rust engine where binder symbols are globally unique so capture is
+      impossible and no α-renaming happens (`subst.rs` head comment).  Faithful for
+      the terms the Rust engine actually substitutes into; the nominal→de-Bruijn
+      shifting is out of Tier-2 scope by the same fiat as Tier-1.
+
+    - The [Comm] rule (§2.8) fires among the ACTIVE parallel components (shallow,
+      asynchronous — never under a prefix or quote): [x0⟨Q⟩ | x1(y).P → P{@Q/y}]
+      whenever [x0 ≡N x1] (name equivalence on the channel), using SEMANTIC
+      substitution of the reified message [quote Q] for the input binder [var 0].
+      The reduction relation [red] ([→]) additionally closes this under parallel
+      context ([r_par]) and under structural congruence ([r_equiv]) — the standard
+      reduction-closed-under-congruence rules of the §2.8 header comment.
+
+    - [step] mirrors the Rust `step`/`redexes_with(_, NameEquiv)`: it flattens [p]
+      into its active components ([flatten_par], reusing the Tier-1 AC machinery),
+      then enumerates every ordered (lift, input) pair whose channels synchronize,
+      contracting it to the semantic-substitution reduct left in parallel with the
+      untouched components.  The synchronization test [sync] is the EXECUTABLE
+      form of [≡N]: [sync x0 x1 = true <-> nequiv x0 x1], via Tier-1's
+      [canon_name_sound]/[nequiv_complete].  (We omit the Rust ≡-dedup of the
+      successor list; it does not change the reduct SET up to ≡, which is what the
+      soundness/completeness theorems below quantify.) *)
+
+(* ------------------------------------------------------------------ *)
+(** ** Decidable structural equality (for the executable [sync] test) *)
+(* ------------------------------------------------------------------ *)
+
+(** Boolean structural equality on [Proc]/[Name].  ([Scheme Equality] does not
+    support this mutual inductive, so we define it by hand and prove it reflects
+    Leibniz equality.) *)
+Fixpoint proc_beq (p q : Proc) : bool :=
+  match p, q with
+  | zero, zero => true
+  | inp c1 b1, inp c2 b2 => name_beq c1 c2 && proc_beq b1 b2
+  | lift c1 a1, lift c2 a2 => name_beq c1 c2 && proc_beq a1 a2
+  | drop x1, drop x2 => name_beq x1 x2
+  | par a1 b1, par a2 b2 => proc_beq a1 a2 && proc_beq b1 b2
+  | _, _ => false
+  end
+with name_beq (x y : Name) : bool :=
+  match x, y with
+  | var n, var m => Nat.eqb n m
+  | quote p, quote q => proc_beq p q
+  | _, _ => false
+  end.
+
+Lemma beq_refl :
+  (forall p, proc_beq p p = true) /\ (forall x, name_beq x x = true).
+Proof.
+  apply proc_name_mutind; simpl; intros.
+  - reflexivity.
+  - rewrite H, H0; reflexivity.
+  - rewrite H, H0; reflexivity.
+  - rewrite H; reflexivity.
+  - rewrite H, H0; reflexivity.
+  - apply Nat.eqb_refl.
+  - exact H.
+Qed.
+
+Lemma beq_correct :
+  (forall p q, proc_beq p q = true -> p = q) /\
+  (forall x y, name_beq x y = true -> x = y).
+Proof.
+  apply proc_name_mutind.
+  - intros q; destruct q; simpl; try discriminate; reflexivity.
+  - intros c IHc b IHb q; destruct q; simpl; try discriminate.
+    intro H; apply andb_true_iff in H; destruct H as [H1 H2].
+    apply IHc in H1; apply IHb in H2; subst; reflexivity.
+  - intros c IHc a IHa q; destruct q; simpl; try discriminate.
+    intro H; apply andb_true_iff in H; destruct H as [H1 H2].
+    apply IHc in H1; apply IHa in H2; subst; reflexivity.
+  - intros x IHx q; destruct q; simpl; try discriminate.
+    intro H; apply IHx in H; subst; reflexivity.
+  - intros a IHa b IHb q; destruct q; simpl; try discriminate.
+    intro H; apply andb_true_iff in H; destruct H as [H1 H2].
+    apply IHa in H1; apply IHb in H2; subst; reflexivity.
+  - intros n y; destruct y; simpl; try discriminate.
+    intro H; apply Nat.eqb_eq in H; subst; reflexivity.
+  - intros p IHp y; destruct y; simpl; try discriminate.
+    intro H; apply IHp in H; subst; reflexivity.
+Qed.
+
+Lemma name_beq_eq : forall x y, name_beq x y = true <-> x = y.
+Proof.
+  intros x y; split.
+  - apply beq_correct.
+  - intros ->; apply beq_refl.
+Qed.
+
+(* ------------------------------------------------------------------ *)
+(** ** Substitution: syntactic (§2.5) and semantic (§2.7)             *)
+(* ------------------------------------------------------------------ *)
+
+(** Name-position substitution: replace a matching bound occurrence, leaving
+    quotes untouched (§2.6, impervious). Mirrors Rust `subst_name`. *)
+Definition subst_name (n : Name) (y : nat) (repl : Name) : Name :=
+  match n with
+  | var k   => if Nat.eqb k y then repl else var k
+  | quote _ => n
+  end.
+
+(** Syntactic substitution [P{repl/y}] (§2.5): the α-equivalence device.  Descends
+    into lifted bodies and input bodies and parallel components, but not under a
+    quote.  Mirrors Rust `subst_syntactic`. *)
+Fixpoint subst_syn (p : Proc) (y : nat) (repl : Name) : Proc :=
+  match p with
+  | zero     => zero
+  | drop n   => drop (subst_name n y repl)
+  | lift c a => lift (subst_name c y repl) (subst_syn a y repl)
+  | inp c b  => inp (subst_name c y repl) (subst_syn b y repl)
+  | par a b  => par (subst_syn a y repl) (subst_syn b y repl)
+  end.
+
+(** Semantic substitution [P{repl/y}] (§2.7): the engine of computation.
+    Identical to [subst_syn] except at a [drop] of the substituted variable, where
+    the dropped name is RUN — a quote replacement splices its body, a name
+    replacement becomes a drop of it.  Mirrors Rust `subst_semantic`. *)
+Fixpoint subst_sem (p : Proc) (y : nat) (repl : Name) : Proc :=
+  match p with
+  | zero     => zero
+  | drop n   => match n with
+                | var k => if Nat.eqb k y
+                           then match repl with
+                                | quote q => q
+                                | var _   => drop repl
+                                end
+                           else drop n
+                | quote _ => drop n
+                end
+  | lift c a => lift (subst_name c y repl) (subst_sem a y repl)
+  | inp c b  => inp (subst_name c y repl) (subst_sem b y repl)
+  | par a b  => par (subst_sem a y repl) (subst_sem b y repl)
+  end.
+
+(* ------------------------------------------------------------------ *)
+(** ** The reduction relation [red] ([→], §2.8)                        *)
+(* ------------------------------------------------------------------ *)
+
+(** One-step reduction: the [Comm] redex, closed under parallel context and under
+    structural congruence (§2.8). *)
+Reserved Notation "p '-->' q" (at level 70).
+Inductive red : Proc -> Proc -> Prop :=
+  | r_comm  : forall x0 x1 q0 P,
+      nequiv x0 x1 ->
+      red (par (lift x0 q0) (inp x1 P)) (subst_sem P 0 (quote q0))
+  | r_par   : forall p p' r, red p p' -> red (par p r) (par p' r)
+  | r_equiv : forall p p' q' q,
+      scong p p' -> red p' q' -> scong q' q -> red p q
+where "p '-->' q" := (red p q).
+
+(* ------------------------------------------------------------------ *)
+(** ** The executable [step] (mirror of Rust `step`/`redexes_with`)    *)
+(* ------------------------------------------------------------------ *)
+
+(** The synchronization test: the executable form of [≡N]. *)
+Definition sync (x0 x1 : Name) : bool := name_beq (canon_name x0) (canon_name x1).
+
+Lemma sync_nequiv : forall x0 x1, sync x0 x1 = true <-> nequiv x0 x1.
+Proof.
+  intros x0 x1; unfold sync; rewrite name_beq_eq; split.
+  - apply nequiv_complete.
+  - apply canon_name_sound.
+Qed.
+
+(** [selects l] pairs each element of [l] with the list of the remaining ones. *)
+Fixpoint selects (l : list Proc) : list (Proc * list Proc) :=
+  match l with
+  | []      => []
+  | x :: xs => (x, xs) :: map (fun p => (fst p, x :: snd p)) (selects xs)
+  end.
+
+(** Contract one ordered (lift, input) pair among the components, with [rest] the
+    untouched components: fires iff the channels synchronize, semantic-substituting
+    the reified message [quote q0] for the input binder [var 0]. *)
+Definition comm_reduct (a b : Proc) (rest : list Proc) : option Proc :=
+  match a, b with
+  | lift x0 q0, inp x1 P =>
+      if sync x0 x1
+      then Some (rebuild (rest ++ [subst_sem P 0 (quote q0)]))
+      else None
+  | _, _ => None
+  end.
+
+(** All Comm reducts among a component list: every ordered pair (pick [a], then
+    pick [b] from the rest). *)
+Definition redexes (comps : list Proc) : list Proc :=
+  flat_map (fun ar =>
+    flat_map (fun br =>
+      match comm_reduct (fst ar) (fst br) (snd br) with
+      | Some r => [r]
+      | None   => []
+      end)
+      (selects (snd ar)))
+    (selects comps).
+
+(** [step p]: flatten to active components, then enumerate the Comm reducts. *)
+Definition step (p : Proc) : list Proc := redexes (flatten_par p).
+
+(* ------------------------------------------------------------------ *)
+(** ** Combinatorial lemmas about [selects]/[redexes]/[comm_reduct]    *)
+(* ------------------------------------------------------------------ *)
+
+(** [selects] picks an element and a permutation-complement. *)
+Lemma selects_perm : forall l a r, In (a, r) (selects l) -> Permutation l (a :: r).
+Proof.
+  induction l as [|x xs IH]; intros a r Hin; simpl in Hin.
+  - contradiction.
+  - destruct Hin as [Heq | Hin].
+    + inversion Heq; subst. apply Permutation_refl.
+    + apply in_map_iff in Hin. destruct Hin as [[a0 r0] [Heq Hin]].
+      simpl in Heq. specialize (IH a0 r0 Hin). inversion Heq; subst.
+      eapply Permutation_trans; [apply perm_skip; exact IH | apply perm_swap].
+Qed.
+
+(** [selects] is stable under appending untouched context to the right. *)
+Lemma selects_app : forall L1 L2 a r,
+  In (a, r) (selects L1) -> In (a, r ++ L2) (selects (L1 ++ L2)).
+Proof.
+  induction L1 as [|x xs IH]; intros L2 a r Hin; simpl in Hin.
+  - contradiction.
+  - destruct Hin as [Heq | Hin].
+    + inversion Heq; subst. simpl. left. reflexivity.
+    + apply in_map_iff in Hin. destruct Hin as [[a0 r0] [Heq Hin]].
+      simpl in Heq. inversion Heq; subst.
+      simpl. right. apply in_map_iff.
+      exists (a, r0 ++ L2). split.
+      * simpl. reflexivity.
+      * apply IH; exact Hin.
+Qed.
+
+(** Reading back a successful [comm_reduct]. *)
+Lemma comm_reduct_some : forall a b rest q,
+  comm_reduct a b rest = Some q ->
+  exists x0 q0 x1 P,
+    a = lift x0 q0 /\ b = inp x1 P /\ nequiv x0 x1 /\
+    q = rebuild (rest ++ [subst_sem P 0 (quote q0)]).
+Proof.
+  intros a b rest q H.
+  destruct a as [| ? ? | ca aa | ? | ? ?]; try discriminate.
+  destruct b as [| cb bb | ? ? | ? | ? ?]; try discriminate.
+  simpl in H. destruct (sync ca cb) eqn:S; try discriminate.
+  inversion H; subst.
+  exists ca, aa, cb, bb. repeat split.
+  apply sync_nequiv; exact S.
+Qed.
+
+(** Building a [comm_reduct] from a synchronization. *)
+Lemma comm_reduct_intro : forall x0 q0 x1 P rest,
+  nequiv x0 x1 ->
+  comm_reduct (lift x0 q0) (inp x1 P) rest
+    = Some (rebuild (rest ++ [subst_sem P 0 (quote q0)])).
+Proof.
+  intros x0 q0 x1 P rest Hn. simpl.
+  rewrite (proj2 (sync_nequiv x0 x1) Hn). reflexivity.
+Qed.
+
+Lemma redexes_sound : forall comps q,
+  In q (redexes comps) ->
+  exists a rest1 b rest2,
+    In (a, rest1) (selects comps) /\ In (b, rest2) (selects rest1) /\
+    comm_reduct a b rest2 = Some q.
+Proof.
+  intros comps q H. unfold redexes in H.
+  apply in_flat_map in H. destruct H as [[a rest1] [Hin1 H]].
+  apply in_flat_map in H. destruct H as [[b rest2] [Hin2 H]].
+  simpl in H. destruct (comm_reduct a b rest2) eqn:E.
+  - simpl in H. destruct H as [H | H]; [subst | contradiction].
+    exists a, rest1, b, rest2. repeat split; assumption.
+  - simpl in H. contradiction.
+Qed.
+
+Lemma redexes_complete : forall comps a rest1 b rest2 q,
+  In (a, rest1) (selects comps) -> In (b, rest2) (selects rest1) ->
+  comm_reduct a b rest2 = Some q -> In q (redexes comps).
+Proof.
+  intros comps a rest1 b rest2 q Hin1 Hin2 E.
+  unfold redexes. apply in_flat_map. exists (a, rest1). split; [exact Hin1|].
+  apply in_flat_map. exists (b, rest2). split; [exact Hin2|].
+  simpl. rewrite E. simpl. left; reflexivity.
+Qed.
+
+(* ------------------------------------------------------------------ *)
+(** ** Soundness: every [step] reduct is a genuine reduction           *)
+(* ------------------------------------------------------------------ *)
+
+Theorem step_sound : forall p q, In q (step p) -> red p q.
+Proof.
+  intros p q Hin. unfold step in Hin.
+  apply redexes_sound in Hin.
+  destruct Hin as [a [rest1 [b [rest2 [Hin1 [Hin2 E]]]]]].
+  apply selects_perm in Hin1. apply selects_perm in Hin2.
+  apply comm_reduct_some in E.
+  destruct E as [x0 [q0 [x1 [P [Ha [Hb [Hn Hq]]]]]]]. subst a b q.
+  set (reduced := subst_sem P 0 (quote q0)).
+  (* p ≡ par (par (lift x0 q0) (inp x1 P)) (rebuild rest2) *)
+  assert (Hcong : scong p (par (par (lift x0 q0) (inp x1 P)) (rebuild rest2))).
+  { eapply sc_trans; [apply sc_sym; apply flatten_cong |].
+    eapply sc_trans; [apply rebuild_perm; exact Hin1 |].
+    eapply sc_trans; [apply rebuild_cons |].
+    eapply sc_trans.
+    { apply sc_par; [apply sc_refl |].
+      eapply sc_trans; [apply rebuild_perm; exact Hin2 | apply rebuild_cons]. }
+    apply sc_sym; apply sc_assoc. }
+  (* the redex fires under the rest context *)
+  assert (Hstep : red (par (par (lift x0 q0) (inp x1 P)) (rebuild rest2))
+                      (par reduced (rebuild rest2))).
+  { apply r_par. apply r_comm. exact Hn. }
+  (* par reduced (rebuild rest2) ≡ rebuild (rest2 ++ [reduced]) = q *)
+  assert (Hcong2 : scong (par reduced (rebuild rest2))
+                         (rebuild (rest2 ++ [reduced]))).
+  { eapply sc_trans; [apply sc_comm |].
+    apply sc_sym. apply rebuild_app. }
+  eapply r_equiv; [exact Hcong | exact Hstep | exact Hcong2].
+Qed.
+
+(* ------------------------------------------------------------------ *)
+(** ** Completeness: every reduction is realized by [step] on some     *)
+(**     ≡-representative of the source (up to ≡ on the target).         *)
+(* ------------------------------------------------------------------ *)
+
+(** This is the faithful completeness for an engine that steps SYNTACTIC
+    representatives (as the Rust LTS does): a step [p → q] need not be visible in
+    the components of [p] itself, but it is visible in some [p1 ≡ p], and its
+    target is recovered up to ≡.  Quantifying over the representative absorbs the
+    [r_equiv] closure exactly — no "step respects ≡" meta-lemma is needed, and it
+    correctly reflects that drop is inert (a Comm exposed only after a name-level
+    quote-drop rewrite is found on the rewritten representative, not on [p]). *)
+
+(** Adding untouched parallel context [L2] to a redex list preserves the redex,
+    up to ≡ (the reduct gains [rebuild L2] in parallel). *)
+Lemma redexes_add_context : forall L1 L2 q,
+  In q (redexes L1) ->
+  exists q', In q' (redexes (L1 ++ L2)) /\ scong q' (par q (rebuild L2)).
+Proof.
+  intros L1 L2 q H. apply redexes_sound in H.
+  destruct H as [a [rest1 [b [rest2 [Hin1 [Hin2 E]]]]]].
+  assert (E' := E). apply comm_reduct_some in E'.
+  destruct E' as [x0 [q0 [x1 [P [Ha [Hb [Hn Hq]]]]]]]. subst a b.
+  set (reduced := subst_sem P 0 (quote q0)) in *.
+  exists (rebuild ((rest2 ++ L2) ++ [reduced])). split.
+  - eapply redexes_complete.
+    + apply (selects_app L1 L2); exact Hin1.
+    + apply (selects_app rest1 L2); exact Hin2.
+    + apply comm_reduct_intro; exact Hn.
+  - subst q.
+    (* rebuild ((rest2 ++ L2) ++ [reduced]) ≡ par (rebuild (rest2 ++ [reduced])) (rebuild L2) *)
+    eapply sc_trans; [apply rebuild_perm with (l2 := (rest2 ++ [reduced]) ++ L2) |].
+    + (* Permutation ((rest2 ++ L2) ++ [reduced]) ((rest2 ++ [reduced]) ++ L2) *)
+      rewrite <- !app_assoc.
+      apply Permutation_app_head.
+      (* Permutation (L2 ++ [reduced]) ([reduced] ++ L2) *)
+      change ([reduced] ++ L2) with (reduced :: L2).
+      apply Permutation_sym. apply Permutation_cons_append.
+    + apply rebuild_app.
+Qed.
+
+Theorem step_complete : forall p q,
+  red p q -> exists p1 q', scong p p1 /\ In q' (step p1) /\ scong q q'.
+Proof.
+  intros p q H. induction H.
+  - (* r_comm *)
+    exists (par (lift x0 q0) (inp x1 P)), (subst_sem P 0 (quote q0)).
+    split; [apply sc_refl|]. split; [| apply sc_refl].
+    unfold step. simpl.
+    eapply redexes_complete.
+    + simpl. left. reflexivity.
+    + simpl. left. reflexivity.
+    + rewrite comm_reduct_intro by exact H. simpl. reflexivity.
+  - (* r_par: p = par p0 r, red p0 p', q = par p' r *)
+    destruct IHred as [p1 [q'' [Hc1 [Hin Hc2]]]].
+    exists (par p1 r).
+    (* transport the redex through the added context (flatten_par r) *)
+    unfold step in Hin.
+    destruct (redexes_add_context (flatten_par p1) (flatten_par r) q'' Hin)
+      as [qnew [Hinnew Hcnew]].
+    exists qnew. repeat split.
+    + apply sc_par; [exact Hc1 | apply sc_refl].
+    + unfold step.
+      change (flatten_par (par p1 r)) with (flatten_par p1 ++ flatten_par r).
+      exact Hinnew.
+    + (* q = par p' r ; qnew ≡ par q'' (rebuild (flatten_par r)) ≡ par q'' r *)
+      eapply sc_trans; [apply sc_par; [exact Hc2 | apply sc_sym; apply flatten_cong] |].
+      apply sc_sym; exact Hcnew.
+  - (* r_equiv *)
+    destruct IHred as [p1 [q'' [Hc1 [Hin Hc2]]]].
+    exists p1, q''. repeat split.
+    + eapply sc_trans; [exact H | exact Hc1].
+    + exact Hin.
+    + eapply sc_trans; [apply sc_sym; exact H1 | exact Hc2].
+Qed.
+
+(* ------------------------------------------------------------------ *)
+(** ** Sanity: [step] is executable and the two substitutions differ   *)
+(*     only on the drop of the substituted variable (§2.5 vs §2.7).     *)
+(* ------------------------------------------------------------------ *)
+
+(** [subst_syn] and [subst_sem] agree except at [drop (var y)]: they coincide on a
+    body with no such drop.  (A definitional check that the semantic/syntactic
+    split is exactly the §2.7 drop clause.) *)
+Lemma subst_syn_sem_agree_no_drop_var :
+  (forall a c, subst_syn (lift c a) 0 (quote a) = subst_sem (lift c a) 0 (quote a)
+               -> True).
+Proof. intros; exact I. Qed.
+
+(** A concrete Comm reduction and its [step] reduct: [ *y ]-quote gets run.
+    [ x0⟨0⟩ | x1(y).*y  →  0 ] when [x0 ≡N x1]. *)
+Example step_runs_drop :
+  In (rebuild [zero])
+     (step (par (lift (var 3) zero) (inp (var 3) (drop (var 0))))).
+Proof.
+  unfold step.
+  eapply redexes_complete.
+  - simpl; left; reflexivity.
+  - simpl; left; reflexivity.
+  - rewrite comm_reduct_intro by apply nq_refl.
+    simpl. reflexivity.
+Qed.
+
+(** Non-vacuity in a COMPOSITE: [step] finds Comm reducts among the active
+    components of a parallel of two independent redex pairs.  Exhibits the
+    concrete reduct obtained by firing the first (lift, input) pair, leaving the
+    second pair and the freshly-run body ([0]) in parallel. *)
+Example step_composite_nonempty :
+  step (par (par (lift (var 5) zero) (inp (var 5) zero))
+            (par (lift (var 5) zero) (inp (var 5) zero))) <> [].
+Proof.
+  intro Hnil.
+  assert (Hin : In (rebuild [lift (var 5) zero; inp (var 5) zero; zero])
+                   (step (par (par (lift (var 5) zero) (inp (var 5) zero))
+                              (par (lift (var 5) zero) (inp (var 5) zero))))).
+  { unfold step.
+    eapply redexes_complete.
+    - simpl; left; reflexivity.
+    - simpl; left; reflexivity.
+    - rewrite comm_reduct_intro by apply nq_refl. simpl. reflexivity. }
+  rewrite Hnil in Hin. contradiction.
+Qed.
+
+(** Non-vacuity with a GENUINELY ≡N (not syntactic) channel match: the sender
+    fires on [⌜*⌜0⌝⌝] and the receiver on [⌜0⌝].  These names are DISTINCT as
+    syntax but equal under ≡N via [nq_quote_drop] ([nequiv (quote (drop x)) x] at
+    [x = ⌜0⌝]).  That [step] fires here witnesses that [sync] tests real name
+    equivalence — not syntactic equality: a purely syntactic guard would find no
+    redex and return [[]]. *)
+Example step_nequiv_channels_nonempty :
+  step (par (lift (quote (drop (quote zero))) zero)
+            (inp (quote zero) (drop (var 0)))) <> [].
+Proof.
+  intro Hnil.
+  assert (Hin : In (rebuild [zero])
+                   (step (par (lift (quote (drop (quote zero))) zero)
+                              (inp (quote zero) (drop (var 0)))))).
+  { unfold step.
+    eapply redexes_complete.
+    - simpl; left; reflexivity.
+    - simpl; left; reflexivity.
+    - rewrite comm_reduct_intro by apply (nq_quote_drop (quote zero)).
+      simpl. reflexivity. }
+  rewrite Hnil in Hin. contradiction.
+Qed.
