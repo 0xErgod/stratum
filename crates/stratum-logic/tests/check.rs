@@ -1,10 +1,10 @@
 //! Model-checking tests over ρ-calculus systems.
 
-use stratum_core::term::{input, lift, quote, zero, par};
+use stratum_core::term::{input, lift, par, quote, zero};
 use stratum_core::{Name, Proc};
-use stratum_lts::Lts;
 use stratum_logic::examples::emits;
-use stratum_logic::{af, ag, can, ef, eg, holds, neg, tt, prop, witness, counterexample};
+use stratum_logic::{af, ag, can, counterexample, ef, eg, holds, neg, prop, tt, witness};
+use stratum_lts::Lts;
 
 /// Distinct channels used across the tests.
 fn chan_a() -> Name {

@@ -1,11 +1,9 @@
 //! Tests for the field grain: partition lattice laws, projections, and
 //! measurability.
 
-use stratum_core::term::{input, lift, quote, zero, par};
+use stratum_core::term::{input, lift, par, quote, zero};
 use stratum_core::Name;
-use stratum_field::{
-    generated_field, is_measurable, observational_field, project, Agent, Field,
-};
+use stratum_field::{generated_field, is_measurable, observational_field, project, Agent, Field};
 use stratum_lts::Lts;
 
 fn x() -> Name {

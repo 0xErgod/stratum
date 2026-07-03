@@ -27,3 +27,35 @@ jobs:
         run: cargo test -p stratum-syntax --features tree-sitter
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: fmt --check
+        run: cargo fmt --all -- --check
+
+  coq:
+    name: coq proof-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: coqc + coqchk (proofs/)
+        uses: coq-community/docker-coq-action@v1
+        with:
+          # Rocq/Coq 9.0.1 — matches the prover the mechanization is developed
+          # against (see proofs/Rho.v header). coqorg/coq stops at 8.20; the
+          # 9.x line lives in the successor image rocq/rocq-prover.
+          custom_image: rocq/rocq-prover:9.0.1
+          custom_script: |
+            {{before_script}}
+            startGroup "coqc — compile Rho.v"
+              ( cd proofs && coqc -Q . Stratum Rho.v )
+            endGroup
+            startGroup "coqchk — kernel re-validation"
+              ( cd proofs && coqchk -silent -Q . Stratum Stratum.Rho )
+            endGroup

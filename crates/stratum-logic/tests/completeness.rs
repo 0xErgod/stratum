@@ -4,9 +4,9 @@
 
 use stratum_core::term::{drop_, input, lift, output, par, quote, zero};
 use stratum_core::{Name, Proc};
-use stratum_lts::Lts;
 use stratum_logic::examples::emits;
 use stratum_logic::{counterexample, ef, holds_checked, neg, prop, satisfies_checked, witness};
+use stratum_lts::Lts;
 
 /// The observable `goal` channel `@(@0!(0))`.
 fn goal() -> Name {
@@ -47,7 +47,10 @@ fn replicating_system() -> Proc {
 #[test]
 fn finite_verdict_is_exact() {
     let lts = Lts::explore(&finite_system(), 100);
-    assert!(!lts.is_truncated(), "a finite system should explore to completion");
+    assert!(
+        !lts.is_truncated(),
+        "a finite system should explore to completion"
+    );
 
     let v = holds_checked(&lts, &ef(prop("goal")), &label);
     assert!(v.holds, "goal is reachable");
@@ -61,7 +64,10 @@ fn truncated_verdict_is_not_exact() {
 
     let v = holds_checked(&lts, &ef(prop("goal")), &label);
     assert!(v.holds, "goal is reached within the explored fragment");
-    assert!(!v.exact, "a truncated LTS verdict is only about the fragment");
+    assert!(
+        !v.exact,
+        "a truncated LTS verdict is only about the fragment"
+    );
 }
 
 #[test]

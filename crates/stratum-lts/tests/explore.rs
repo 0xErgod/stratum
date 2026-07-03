@@ -46,7 +46,9 @@ fn confluent_diamond() {
     assert_eq!(lts.transitions(lts.initial()).len(), 2);
 
     // Exactly one terminal state (the common normal form).
-    let terminals = (0..lts.num_states()).filter(|&i| lts.is_terminal(i)).count();
+    let terminals = (0..lts.num_states())
+        .filter(|&i| lts.is_terminal(i))
+        .count();
     assert_eq!(terminals, 1);
 }
 
@@ -73,7 +75,10 @@ fn replication_is_truncated() {
     }
     let x = quote(zero());
     let p = lift(quote(drop_(quote(zero()))), zero());
-    let bang = par([lift(x.clone(), par([replicator(x.clone()), p])), replicator(x)]);
+    let bang = par([
+        lift(x.clone(), par([replicator(x.clone()), p])),
+        replicator(x),
+    ]);
 
     let lts = Lts::explore(&bang, 5);
     assert!(lts.num_states() <= 5);

@@ -91,7 +91,11 @@ fn bang_null_is_null_up_to_the_internal_channel() {
     let lts = Lts::explore(&b0, 50);
     assert_eq!(lts.num_states(), 1, "bang(0) is a single τ-looping state");
     assert!(!lts.is_truncated());
-    assert_eq!(lts.transitions(0).len(), 1, "the loop on the internal channel");
+    assert_eq!(
+        lts.transitions(0).len(),
+        1,
+        "the loop on the internal channel"
+    );
 
     let x = internal_channel(&b0);
 
@@ -125,7 +129,10 @@ fn bang_accumulates_copies_of_an_inert_process() {
     let bound = 8;
     let lts = Lts::explore(&bang_s, bound);
     assert_eq!(lts.num_states(), bound);
-    assert!(lts.is_truncated(), "replication is unbounded: the chain is infinite");
+    assert!(
+        lts.is_truncated(),
+        "replication is unbounded: the chain is infinite"
+    );
 
     let mut counts: Vec<usize> = (0..lts.num_states())
         .map(|i| count_lifts_on(lts.state(i), &s))

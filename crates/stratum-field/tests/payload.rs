@@ -1,7 +1,7 @@
 //! Tests for payload-granularity content (SPEC §F3): payload separates barbs
 //! that presence lumps together, and is always at least as fine as presence.
 
-use stratum_core::term::{input, lift, quote, zero, par};
+use stratum_core::term::{input, lift, par, quote, zero};
 use stratum_core::Name;
 use stratum_field::content::{payload_field, project_payload};
 use stratum_field::{observational_field, project};

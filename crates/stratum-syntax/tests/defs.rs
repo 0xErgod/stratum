@@ -68,7 +68,10 @@ fn name_alias() {
 fn process_alias() {
     // def hello { @0!(0) }  hello | hello  ≡  @0!(0) | @0!(0)
     let one = lift(quote(zero()), zero());
-    assert_parses("def hello { @0!(0) }\nhello | hello", par([one.clone(), one]));
+    assert_parses(
+        "def hello { @0!(0) }\nhello | hello",
+        par([one.clone(), one]),
+    );
 }
 
 #[test]
@@ -151,10 +154,7 @@ fn named_call_still_sort_checks() {
 #[test]
 fn error_named_unknown_parameter() {
     let e = parse("def f(x, y) { x!(0) | y!(0) }\nf(z <- @0)").unwrap_err();
-    assert!(
-        e.message.contains("no parameter named `z`"),
-        "got: {e}"
-    );
+    assert!(e.message.contains("no parameter named `z`"), "got: {e}");
 }
 
 #[test]
@@ -179,7 +179,8 @@ fn error_named_missing_parameter() {
 fn error_mix_positional_then_named() {
     let e = parse("def f(x, y) { x!(0) | y!(0) }\nf(@0, y <- @0)").unwrap_err();
     assert!(
-        e.message.contains("cannot mix positional and named arguments"),
+        e.message
+            .contains("cannot mix positional and named arguments"),
         "got: {e}"
     );
 }
@@ -188,7 +189,8 @@ fn error_mix_positional_then_named() {
 fn error_mix_named_then_positional() {
     let e = parse("def f(x, y) { x!(0) | y!(0) }\nf(x <- @0, @0)").unwrap_err();
     assert!(
-        e.message.contains("cannot mix positional and named arguments"),
+        e.message
+            .contains("cannot mix positional and named arguments"),
         "got: {e}"
     );
 }
@@ -197,7 +199,10 @@ fn error_mix_named_then_positional() {
 fn named_call_expand_round_trips() {
     let src = "def f(x, y) { x!(0) | y!(0) }\nf(y <- @(@0!(0)), x <- @0)";
     let raw = expand(src).unwrap_or_else(|e| panic!("expand(`{src}`) failed: {e}"));
-    assert!(!raw.contains("def") && !raw.contains("<-"), "raw still sugared: `{raw}`");
+    assert!(
+        !raw.contains("def") && !raw.contains("<-"),
+        "raw still sugared: `{raw}`"
+    );
     assert!(structurally_congruent(
         &parse(&raw).unwrap(),
         &parse(src).unwrap(),
@@ -285,7 +290,10 @@ fn bang_replication_encoding_parses_closed() {
     let src = "def bang(P) { new x  x!( x(y).( x!(*y) | *y ) | P ) | x(y).( x!(*y) | *y ) }\n\
                bang(@0!(0))";
     let p = parse(src).unwrap_or_else(|e| panic!("bang encoding failed to parse: {e}"));
-    assert!(p.is_closed(), "the expansion of `bang(@0!(0))` must be closed");
+    assert!(
+        p.is_closed(),
+        "the expansion of `bang(@0!(0))` must be closed"
+    );
     // And it is transparently expandable to a re-parseable raw term.
     let raw = expand(src).unwrap();
     assert!(!raw.contains("def") && !raw.contains("new"));
