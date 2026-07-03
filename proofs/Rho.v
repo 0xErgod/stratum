@@ -1181,3 +1181,46 @@ Proof.
   - rewrite comm_reduct_intro by apply nq_refl.
     simpl. reflexivity.
 Qed.
+
+(** Non-vacuity in a COMPOSITE: [step] finds Comm reducts among the active
+    components of a parallel of two independent redex pairs.  Exhibits the
+    concrete reduct obtained by firing the first (lift, input) pair, leaving the
+    second pair and the freshly-run body ([0]) in parallel. *)
+Example step_composite_nonempty :
+  step (par (par (lift (var 5) zero) (inp (var 5) zero))
+            (par (lift (var 5) zero) (inp (var 5) zero))) <> [].
+Proof.
+  intro Hnil.
+  assert (Hin : In (rebuild [lift (var 5) zero; inp (var 5) zero; zero])
+                   (step (par (par (lift (var 5) zero) (inp (var 5) zero))
+                              (par (lift (var 5) zero) (inp (var 5) zero))))).
+  { unfold step.
+    eapply redexes_complete.
+    - simpl; left; reflexivity.
+    - simpl; left; reflexivity.
+    - rewrite comm_reduct_intro by apply nq_refl. simpl. reflexivity. }
+  rewrite Hnil in Hin. contradiction.
+Qed.
+
+(** Non-vacuity with a GENUINELY ≡N (not syntactic) channel match: the sender
+    fires on [⌜*⌜0⌝⌝] and the receiver on [⌜0⌝].  These names are DISTINCT as
+    syntax but equal under ≡N via [nq_quote_drop] ([nequiv (quote (drop x)) x] at
+    [x = ⌜0⌝]).  That [step] fires here witnesses that [sync] tests real name
+    equivalence — not syntactic equality: a purely syntactic guard would find no
+    redex and return [[]]. *)
+Example step_nequiv_channels_nonempty :
+  step (par (lift (quote (drop (quote zero))) zero)
+            (inp (quote zero) (drop (var 0)))) <> [].
+Proof.
+  intro Hnil.
+  assert (Hin : In (rebuild [zero])
+                   (step (par (lift (quote (drop (quote zero))) zero)
+                              (inp (quote zero) (drop (var 0)))))).
+  { unfold step.
+    eapply redexes_complete.
+    - simpl; left; reflexivity.
+    - simpl; left; reflexivity.
+    - rewrite comm_reduct_intro by apply (nq_quote_drop (quote zero)).
+      simpl. reflexivity. }
+  rewrite Hnil in Hin. contradiction.
+Qed.
