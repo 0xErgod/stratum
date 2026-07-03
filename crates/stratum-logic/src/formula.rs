@@ -67,6 +67,24 @@ pub enum Formula {
     /// `P_A φ` — agent `A` considers `φ` *possible*: `φ` holds in some state `A`
     /// cannot distinguish from the current one. The epistemic dual of `Knows`.
     Possible(String, Bf),
+    /// `fairEG φ` — there EXISTS a **fair** path (an infinite run satisfying every
+    /// caller-supplied fairness constraint infinitely often) along which `φ`
+    /// always holds. Evaluated by [`crate::check::check_fair`] against a
+    /// [`crate::check::Fairness`] condition; under the plain [`crate::check::check`]
+    /// (no constraints) it degenerates to ordinary `EG`.
+    ///
+    /// Unlike `Mu`/`Nu`, this carries no fixpoint *variable*: the checker computes
+    /// it by a self-contained Emerson–Lei nested fixpoint over the argument's
+    /// denotation. It is monotone in `φ` (a larger `φ` can only enlarge the set of
+    /// fair `φ`-paths), so — with `φ` occurring positively in positive normal
+    /// form — it composes freely inside the surrounding monotone fixpoints, just
+    /// like `Knows`/`Possible`.
+    FairEg(Bf),
+    /// `fairAF φ` — on ALL fair paths, `φ` eventually holds; equivalently
+    /// `¬ fairEG(¬φ)`. Vacuously true at a state with no fair path at all. The
+    /// fair, liveness-meaningful counterpart of [`af`]. Monotone in `φ` for the
+    /// same reason as [`Formula::FairEg`].
+    FairAf(Bf),
 }
 
 /// `⊤`.
@@ -130,6 +148,10 @@ pub fn neg(f: Formula) -> Formula {
         Formula::Var(x) => Formula::Var(x),
         Formula::Knows(a, g) => Formula::Possible(a, Box::new(neg(*g))),
         Formula::Possible(a, g) => Formula::Knows(a, Box::new(neg(*g))),
+        // `¬ fairEG φ = fairAF ¬φ` and dually: on every fair path `φ` eventually
+        // fails. Keeps the result in positive normal form.
+        Formula::FairEg(g) => Formula::FairAf(Box::new(neg(*g))),
+        Formula::FairAf(g) => Formula::FairEg(Box::new(neg(*g))),
     }
 }
 
@@ -182,6 +204,25 @@ pub fn af(f: Formula) -> Formula {
 /// `⟨c⟩⊤` — a transition on channel `c` is possible now.
 pub fn can(channel: Name) -> Formula {
     diamond(Action::On(channel), tt())
+}
+
+/// `fairEG φ` — some fair path keeps `φ` forever.
+///
+/// The dual of [`fair_af`]. Only meaningful under a
+/// [`crate::check::Fairness`] condition supplied to [`crate::check::check_fair`];
+/// with no constraints it coincides with [`eg`].
+pub fn fair_eg(f: Formula) -> Formula {
+    Formula::FairEg(Box::new(f))
+}
+
+/// `fairAF φ = ¬ fairEG(¬φ)` — on all fair paths, `φ` eventually holds.
+///
+/// The fairness-aware liveness operator: a system that is live only under a
+/// fairness assumption satisfies `fair_af(φ)` (with that assumption supplied to
+/// [`crate::check::check_fair`]) but not the plain [`af`]. Vacuously true where
+/// no fair path exists.
+pub fn fair_af(f: Formula) -> Formula {
+    Formula::FairAf(Box::new(f))
 }
 
 /// `K_A φ` — agent `A` knows `φ`.

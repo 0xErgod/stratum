@@ -39,12 +39,12 @@ pub mod check;
 pub mod formula;
 
 pub use check::{
-    check, check_epistemic, counterexample, holds, holds_checked, holds_epistemic, satisfies,
-    satisfies_checked, shortest_path, witness, Agents, Checked,
+    check, check_epistemic, check_fair, counterexample, holds, holds_checked, holds_epistemic,
+    holds_fair, satisfies, satisfies_checked, shortest_path, witness, Agents, Checked, Fairness,
 };
 pub use formula::{
-    af, ag, and, boxm, can, diamond, ef, eg, ex, ff, knows, mu, neg, nu, or, possible, prop, tt,
-    var, Action, Formula,
+    af, ag, and, boxm, can, diamond, ef, eg, ex, fair_af, fair_eg, ff, knows, mu, neg, nu, or,
+    possible, prop, tt, var, Action, Formula,
 };
 
 /// Small state predicates handy for atomic propositions in examples and tests.
