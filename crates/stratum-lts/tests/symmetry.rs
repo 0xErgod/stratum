@@ -8,19 +8,31 @@
 //! deliberately does **not** preserve predicates that name one interchangeable
 //! channel asymmetrically, so those are never asserted here.
 //!
-//! The suite has four parts:
+//! The suite has five parts:
 //!   * an **empty-set pin**: with no interchangeable channels the symmetric
 //!     explorer must coincide byte-for-byte with the full [`Lts::explore`];
 //!   * unit tests pinning a small orbit collapse;
+//!   * a **soundness-guard pin**: a *non-independent* declared set (one channel
+//!     buried inside another) must trip the guard and fall back to full
+//!     exploration, coinciding exactly with [`Lts::explore`] — so no reachable
+//!     behaviour is ever dropped by an ill-declared symmetry;
 //!   * a seeded **differential** test over many random *symmetric* ρ-systems,
 //!     comparing reachable symmetric barbs and `EF`/`AG` verdicts (via the real
 //!     `stratum-logic` checker) and asserting `sym ≤ full` on state count;
 //!   * an **acceptance benchmark** of N interchangeable agents, where full
 //!     exploration is `2^N` states and symmetry reduction is linear (`N + 1`).
+//!
+//! Note on scope: the differential generator (`random_symmetric_system`) only ever
+//! emits *genuine independent* symmetries — it instantiates one motif uniformly
+//! per interchangeable channel, over channels (`distinct_chan(1..)`) none of which
+//! occurs inside another — so it exercises the *reduced* path but, by
+//! construction, cannot produce a non-genuine (dependent) set. The dependent /
+//! guard-fallback case is pinned separately by
+//! `non_independent_set_falls_back_to_explore`.
 
 use std::collections::BTreeSet;
 
-use stratum_core::term::{input, lift, par, zero};
+use stratum_core::term::{input, lift, output, par, zero};
 use stratum_core::{canonicalize_name, name_equiv, Name, Proc};
 use stratum_logic::examples::emits;
 use stratum_logic::{ag, ef, holds, prop};
@@ -157,6 +169,52 @@ fn two_agents_collapse_one_mid_state() {
 }
 
 // ---------------------------------------------------------------------------
+// Soundness guard: a non-independent declared set must fall back to `explore`.
+// ---------------------------------------------------------------------------
+
+/// A **non-genuine** symmetry: `c0 = ⌜0⌝` occurs (up to `≡N`) *inside*
+/// `c1 = ⌜c0⟨|0|⟩⌝`. Permuting `{c0, c1}` by the naive match-wins rule would not
+/// permute the buried `c0`, so it is not an automorphism and could silently drop
+/// the reachable `done` barb. The guard must detect this and fall back to the
+/// full [`Lts::explore`], so `explore_symmetric` coincides with it *exactly* and
+/// preserves every reachable observation.
+#[test]
+fn non_independent_set_falls_back_to_explore() {
+    let c0 = distinct_chan(0); // ⌜0⌝
+    let c1 = Name::Quote(Box::new(lift(c0.clone(), zero()))); // ⌜c0⟨|0|⟩⌝  (buries c0)
+    let done = distinct_chan(5);
+
+    // `c1⟨|0|⟩ | c1(_).done⟨|0|⟩` reduces on c1 to emit `done`; a stray `c0⟨|0|⟩`
+    // is the buried-channel bait the naive quotient would mishandle.
+    let d = done.clone();
+    let sys = par([
+        lift(c1.clone(), zero()),
+        input(c1.clone(), move |_| lift(d.clone(), zero())),
+        lift(c0.clone(), zero()),
+    ]);
+
+    let full = Lts::explore(&sys, 200);
+    let sym = Lts::explore_symmetric(&sys, 200, &[c0, c1]);
+
+    // Guard tripped ⇒ no quotient ⇒ byte-for-byte the full exploration.
+    assert_same_lts(&full, &sym);
+
+    // And the previously-at-risk `done` barb is preserved (reachable in both).
+    let d = done.clone();
+    let label = move |_n: &str, proc: &Proc| emits(proc, &d);
+    assert!(holds(&full, &ef(prop("done")), &label));
+    assert!(
+        holds(&sym, &ef(prop("done")), &label),
+        "guard fallback must keep EF(done) reachable"
+    );
+    assert_eq!(
+        reachable_barbs(&full, std::slice::from_ref(&done)),
+        reachable_barbs(&sym, std::slice::from_ref(&done)),
+        "guard fallback must preserve reachable done barbs"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Differential test over random *symmetric* ρ-systems.
 // ---------------------------------------------------------------------------
 
@@ -194,16 +252,23 @@ enum Motif {
     RecvSharedEmitSelf(usize),
     /// `s!(0)` — output on a shared channel (identical across agents).
     LiftShared(usize),
+    /// `hub⟨|*c|⟩` — **forward the agent's own name** `c` as a payload on a shared
+    /// `hub` channel (output sugar, so the received object is `≡N c`). Paired with
+    /// a shared `hub(z).z⟨|0|⟩` consumer (see `random_symmetric_system`) this
+    /// reifies a permuted channel *out of a message and back into a channel
+    /// position* — the reflective-payload path the independence guard protects.
+    ForwardSelf(usize),
 }
 
 impl Motif {
     fn random(rng: &mut Rng, num_shared: usize) -> Motif {
-        match rng.below(5) {
+        match rng.below(6) {
             0 => Motif::LiftSelf,
             1 => Motif::RecvSelf,
             2 => Motif::RecvSelfEmitShared(rng.below(num_shared)),
             3 => Motif::RecvSharedEmitSelf(rng.below(num_shared)),
-            _ => Motif::LiftShared(rng.below(num_shared)),
+            4 => Motif::LiftShared(rng.below(num_shared)),
+            _ => Motif::ForwardSelf(rng.below(num_shared)),
         }
     }
 
@@ -220,6 +285,8 @@ impl Motif {
                 input(shared[*s].clone(), move |_| lift(c, zero()))
             }
             Motif::LiftShared(s) => lift(shared[*s].clone(), zero()),
+            // hub⟨|*c|⟩ — send the agent's own name on the shared hub channel.
+            Motif::ForwardSelf(hub) => output(shared[*hub].clone(), c.clone()),
         }
     }
 }
@@ -243,6 +310,14 @@ fn random_symmetric_system(rng: &mut Rng, inter: &[Name], shared: &[Name]) -> Pr
     // Optionally seed a shared output (symmetric, since it names no cᵢ).
     if rng.below(2) == 0 {
         comps.push(lift(shared[rng.below(shared.len())].clone(), zero()));
+    }
+    // Optionally add a shared consumer `hub(z).z⟨|0|⟩` that turns whatever name it
+    // receives into a channel — the sink for `ForwardSelf`, exercising a permuted
+    // interchangeable channel reified from a message back into a channel position.
+    // It names no cᵢ, so the composite stays invariant under `Sym(inter)`.
+    if rng.below(2) == 0 {
+        let hub = shared[rng.below(shared.len())].clone();
+        comps.push(input(hub, |z| lift(z, zero())));
     }
     par(comps)
 }

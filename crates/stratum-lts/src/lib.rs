@@ -564,6 +564,23 @@ impl Lts {
     /// is keyed by its **canonical orbit representative**: the `≡`-canonical
     /// minimum (under `Proc`'s `Ord`) over the `|S|!` images `π(state)`.
     ///
+    /// # Precondition — a genuine symmetry (enforced by fallback)
+    ///
+    /// The caller must supply a set for which permuting the channels is a genuine
+    /// **system automorphism**. The sufficient, checked condition is that the set
+    /// is an **independent generator**: *no interchangeable channel occurs (up to
+    /// `≡N`) inside another's quoted body* (e.g. `c₀ = ⌜0⌝`, `c₁ = ⌜c₀⟨|0|⟩⌝`
+    /// **violates** this — `c₀` is buried in `c₁`). Under this condition the channel
+    /// permutation is a `≡N`-automorphism, so the quotient is sound.
+    ///
+    /// When the condition **fails**, permuting a channel would not permute its
+    /// buried occurrences, so distinct states could be wrongly conflated and
+    /// reachable behaviour dropped. To stay sound on *every* input, this method
+    /// then **conservatively falls back to the full [`Lts::explore`]** — it
+    /// produces a reduced LTS only when the declared symmetry is *provably*
+    /// independent, and an exact, unquotiented one otherwise. The check is
+    /// conservative: any doubtful occurrence is treated as a dependence.
+    ///
     /// # Intended scale
     ///
     /// The representative is computed by enumerating all `|S|!` permutations of
@@ -574,7 +591,9 @@ impl Lts {
     ///
     /// # What this preserves — and what it does NOT
     ///
-    /// The quotient LTS is bisimilar to the full [`Lts::explore`] for exactly the
+    /// **Provided the genuine-symmetry precondition above holds** (otherwise the
+    /// result *is* the full [`Lts::explore`], which preserves everything), the
+    /// quotient LTS is bisimilar to the full [`Lts::explore`] for exactly the
     /// **symmetry-invariant** properties — those whose truth is unchanged by
     /// permuting the interchangeable channels. Concretely it preserves:
     ///
@@ -615,6 +634,19 @@ impl Lts {
         // `canonical name → index` map lets `permute_name` match a channel with a
         // single canonicalization + lookup instead of an `≡N` scan of the set.
         let inter: Vec<Name> = interchangeable.iter().map(canonicalize_name).collect();
+
+        // Soundness guard. The match-wins channel permutation (`permute_name`) is a
+        // `≡N`-automorphism — hence the quotient is sound — only when the declared
+        // channels are a **genuine independent generator**: no interchangeable
+        // channel occurs (up to `≡N`) inside another's quoted body. If that fails,
+        // permuting a channel would fail to also permute its buried occurrences,
+        // conflating genuinely distinct states and *dropping reachable behaviour*.
+        // Rather than emit unsound verdicts we conservatively fall back to the full,
+        // unquotiented [`Lts::explore`], which is always correct.
+        if !interchange_is_independent(&inter) {
+            return Lts::explore(start, max_states);
+        }
+
         let sym = Symmetry {
             index: inter
                 .iter()
@@ -683,6 +715,61 @@ impl Lts {
 struct Symmetry {
     names: Vec<Name>,
     index: HashMap<Name, usize>,
+}
+
+/// Whether the (canonical) interchangeable set is a **genuine independent
+/// generator**: no channel occurs (up to `≡N`) strictly *inside* another's quoted
+/// body. This is the sufficient condition under which the match-wins channel
+/// permutation is a `≡N`-automorphism, so the symmetry quotient is sound; when it
+/// fails, [`Lts::explore_symmetric`] falls back to full exploration.
+///
+/// Conservative by construction: an occurrence anywhere — in a channel position,
+/// a `Drop`, a lifted payload, or nested inside a further quote — counts as a
+/// dependence (self-containment is impossible, since quote depth strictly
+/// decreases under a quote, so only distinct pairs are checked).
+fn interchange_is_independent(inter: &[Name]) -> bool {
+    for (i, ci) in inter.iter().enumerate() {
+        for (j, cj) in inter.iter().enumerate() {
+            if i != j && name_body_contains(cj, ci) {
+                return false; // ci occurs inside cj's body — not independent.
+            }
+        }
+    }
+    true
+}
+
+/// Whether `needle` (`≡N`-canonical) occurs up to `≡N` strictly *inside*
+/// `container`'s quoted body (below the top-level name itself).
+fn name_body_contains(container: &Name, needle: &Name) -> bool {
+    match container {
+        Name::Var(_) => false,
+        Name::Quote(p) => proc_contains_name(p, needle),
+    }
+}
+
+/// Whether `needle` occurs up to `≡N` as any sub-name anywhere in `p` — channel
+/// positions, `Drop`s, lifted payloads, input bodies, and inside nested quotes.
+fn proc_contains_name(p: &Proc, needle: &Name) -> bool {
+    match p {
+        Proc::Zero => false,
+        Proc::Drop(n) => name_contains_name(n, needle),
+        Proc::Lift { chan, arg } => {
+            name_contains_name(chan, needle) || proc_contains_name(arg, needle)
+        }
+        Proc::Input { chan, body, .. } => {
+            name_contains_name(chan, needle) || proc_contains_name(body, needle)
+        }
+        Proc::Par(ps) => ps.iter().any(|q| proc_contains_name(q, needle)),
+    }
+}
+
+/// Whether the name `n` is `≡N needle`, or `needle` occurs inside `n`'s quote.
+fn name_contains_name(n: &Name, needle: &Name) -> bool {
+    name_equiv(n, needle)
+        || match n {
+            Name::Var(_) => false,
+            Name::Quote(p) => proc_contains_name(p, needle),
+        }
 }
 
 /// The canonical orbit representative of `nominal` under `Sym(sym.names)`,
