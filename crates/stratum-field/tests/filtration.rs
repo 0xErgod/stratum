@@ -2,7 +2,7 @@
 //! `t` steps, non-decreasing in information.
 
 use stratum_core::term::{input, lift, quote, zero, par};
-use stratum_core::{name_equiv, Name, Proc};
+use stratum_core::{canonicalize_name, name_equiv, Name, Proc};
 use stratum_field::filtration::{enumerate_traces, filtration, is_filtration};
 use stratum_field::Field;
 use stratum_lts::Lts;
@@ -117,6 +117,42 @@ fn horizon_separates_full_budget_runs() {
     // max_len == the run length (2): the two runs diverge only at the horizon.
     let fields = filtration(&lts, &[ch(0), ch(1)], 2);
     assert_eq!(fields.last().unwrap().num_atoms(), 2);
+}
+
+/// A trace reads as a sequence of `(channel, message)` events. On the
+/// handshake-style `req⟨|0|⟩ | req(x).ack⟨|0|⟩` the sole run fires once: on `req`
+/// (canonical `@0`) carrying the reified value `@0` (the quote of the sent `0`).
+#[test]
+fn trace_records_channel_message_pairs() {
+    let req = quote(zero()); // firing channel @0
+    let ack = ch(1); // a distinct reply channel nobody listens on
+    let sys = par([
+        lift(req.clone(), zero()), // req⟨|0|⟩
+        input(req.clone(), move |_| lift(ack.clone(), zero())), // req(x).ack⟨|0|⟩
+    ]);
+    let lts = Lts::explore(&sys, 100);
+    let traces = enumerate_traces(&lts, 5);
+
+    // One maximal run: req fires, leaving the (stuck) ack emitter.
+    assert_eq!(traces.len(), 1);
+    let tr = &traces[0];
+    assert_eq!(tr.len(), 1);
+    assert_eq!(tr.labels.len(), tr.messages.len());
+
+    // The first (only) event: channel req == @0, message == the reified 0 (@0).
+    let expected_channel = canonicalize_name(&req); // @0
+    let expected_message = canonicalize_name(&quote(zero())); // @0 = ⌜0⌝
+    assert_eq!(tr.labels[0], expected_channel);
+    assert_eq!(tr.messages[0], expected_message);
+
+    // The trace is a sequence of (channel, message) pairs.
+    let events: Vec<(Name, Name)> = tr
+        .labels
+        .iter()
+        .cloned()
+        .zip(tr.messages.iter().cloned())
+        .collect();
+    assert_eq!(events, vec![(expected_channel, expected_message)]);
 }
 
 #[test]
