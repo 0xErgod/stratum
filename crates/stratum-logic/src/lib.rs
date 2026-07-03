@@ -37,6 +37,7 @@
 
 pub mod check;
 pub mod formula;
+pub mod onthefly;
 
 pub use check::{
     check, check_epistemic, check_fair, counterexample, holds, holds_checked, holds_epistemic,
@@ -45,6 +46,10 @@ pub use check::{
 pub use formula::{
     af, ag, and, boxm, can, diamond, ef, eg, ex, fair_af, fair_eg, ff, knows, mu, neg, nu, or,
     possible, prop, tt, var, Action, Formula,
+};
+pub use onthefly::{
+    check_safety, check_safety_prop, find_reachable, find_reachable_prop, Reachability, Run,
+    RunStep, Safety,
 };
 
 /// Small state predicates handy for atomic propositions in examples and tests.
