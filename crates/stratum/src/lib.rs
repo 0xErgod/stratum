@@ -13,6 +13,7 @@
 //! | [`lts`]    | ρ | the labelled transition system over reduction |
 //! | [`logic`]  | ϕ | modal μ-calculus + epistemic model checking |
 //! | [`field`]  | σ | information fields, projections, measurability |
+//! | [`types`]  | — | channel-sort / behavioral typing, a checker over the core |
 //! | [`equiv`]  | — | N-barbed bisimulation, may-testing |
 //! | [`encodings`] | — | derived operators (replication, …) as user-space macros |
 //!
@@ -26,3 +27,4 @@ pub use stratum_field as field;
 pub use stratum_logic as logic;
 pub use stratum_lts as lts;
 pub use stratum_syntax as syntax;
+pub use stratum_types as types;
