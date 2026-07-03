@@ -135,8 +135,8 @@ fn var_channel_forces_full_expansion() {
 struct Rng(u64);
 impl Rng {
     fn new(seed: u64) -> Self {
-        // Avoid the zero fixed point.
-        Rng(seed ^ 0x9E37_79B9_7F4A_7C15 | 1)
+        // Mix the seed, then force it odd so it is never the zero fixed point.
+        Rng((seed ^ 0x9E37_79B9_7F4A_7C15) | 1)
     }
     fn next(&mut self) -> u64 {
         let mut x = self.0;
@@ -249,10 +249,44 @@ fn differential_preserves_barb_reachability_and_safety() {
     // The suite must actually exercise POR: many systems, and POR must strictly
     // reduce at least some of them.
     assert!(compared > 200, "too few comparable systems: {compared}");
+    // The random generator is conflict- and name-passing-heavy on a 3-channel
+    // alphabet, so only a handful of its systems are independent enough to
+    // strictly reduce; that sanity floor stays, but the *meaningful* reduction
+    // bar below is deterministic and robust to the generator.
     assert!(
         strictly_reduced > 0,
-        "POR never reduced any random system — the test is vacuous"
+        "POR never reduced any random system — the fuzzer is vacuous"
     );
+
+    // Deterministic guaranteed-reduction check: for a family of independent-heavy
+    // systems of growing size, POR MUST strictly reduce — by an exponential
+    // margin — while agreeing with the full LTS on the preserved class. Exact
+    // counts (2^n vs n+1) are asserted, so this cannot silently degrade.
+    for n in 2..=6usize {
+        let mut comps = Vec::new();
+        for k in 0..n {
+            comps.extend(comm_pair(distinct_chan(k + 1))); // distinct channels
+        }
+        let sys = par(comps);
+
+        let full = Lts::explore(&sys, 1 << 12);
+        let por = Lts::explore_por(&sys, 1 << 12, &[]);
+        assert!(!full.is_truncated() && !por.is_truncated());
+
+        assert_eq!(full.num_states(), 1 << n, "n={n}: full is 2^n");
+        assert_eq!(por.num_states(), n + 1, "n={n}: POR is linear");
+        assert!(
+            por.num_states() < full.num_states(),
+            "n={n}: POR {} not < full {}",
+            por.num_states(),
+            full.num_states()
+        );
+        assert_eq!(
+            reachable_barbs(&full, &[]),
+            reachable_barbs(&por, &[]),
+            "n={n}: reachable barbs differ"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -376,7 +376,10 @@ fn independent_of_others(k: usize, enabled: &[Enabled]) -> bool {
 /// every non-`t` path. Conservative: a component blocks deferral if it has any
 /// variable in a channel position (a substitution could synthesize `c`) or
 /// mentions `c` as a channel anywhere (a `c`-partner could surface from under a
-/// prefix or a quote).
+/// prefix or a quote). Deliberately over-conservative: a variable-channel or a
+/// `c`-mention buried *inside a quote* is impervious to substitution and can
+/// never fire, yet still blocks deferral here — safe (it only forgoes some
+/// reduction), and not required for correctness.
 fn future_stable(comps: &[Proc], t: &Enabled) -> bool {
     comps.iter().enumerate().all(|(k, comp)| {
         t.comps.contains(&k) || (!has_var_channel(comp) && !mentions_channel(comp, &t.channel))
@@ -489,7 +492,10 @@ fn observed_barbs(comps: &[Proc], observed: &[Name]) -> BTreeSet<Name> {
 
 /// Whether any `Lift`/`Input` node anywhere in `p` (including inside lifted
 /// arguments, input bodies, drops, and *quoted* processes) uses a bound variable
-/// in its channel position.
+/// in its channel position. Deliberately over-conservative: a variable channel
+/// frozen under a quote (`⌜…y(z)…⌝`) is impervious to substitution (§2.6) and can
+/// never fire, but is still flagged — safe, forgoing some reduction, not needed
+/// for correctness.
 fn has_var_channel(p: &Proc) -> bool {
     match p {
         Proc::Zero => false,
