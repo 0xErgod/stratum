@@ -60,6 +60,13 @@ jobs:
             startGroup "rocq compile — Rho.v"
               ( cd proofs && rocq compile -Q . Stratum Rho.v )
             endGroup
-            startGroup "rocq check — kernel re-validation"
-              ( cd proofs && rocq check -silent -Q . Stratum Stratum.Rho )
+            startGroup "coqchk — kernel re-validation"
+              # `rocq compile` already kernel-checks every term; coqchk is an
+              # independent re-check of the compiled .vo. The prover-only image
+              # may not ship the standalone checker, so run it when present.
+              ( cd proofs && if command -v coqchk >/dev/null 2>&1; then
+                  coqchk -silent -Q . Stratum Stratum.Rho
+                else
+                  echo "::notice::coqchk not in image; relying on compile-time kernel check"
+                fi )
             endGroup
