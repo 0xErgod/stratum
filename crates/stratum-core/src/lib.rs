@@ -48,7 +48,7 @@ pub mod term;
 pub use congruence::{canonicalize, canonicalize_name, name_equiv, structurally_congruent};
 pub use reduce::{
     is_normal_form, reachable, redexes_with, step, step_labeled, step_labeled_with, step_with,
-    Annihilation, NameEquiv, Step, Sync,
+    Annihilation, NameEquiv, Step, SyncRule,
 };
 pub use subst::{subst_semantic, subst_syntactic};
 pub use term::{drop_, fresh_sym, input, lift, output, par, quote, zero, Name, Proc};

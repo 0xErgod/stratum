@@ -1,4 +1,4 @@
-//! Pluggable synchronization (§2.8) — the `Sync` trait and its two instances.
+//! Pluggable synchronization (§2.8) — the `SyncRule` trait and its two instances.
 //!
 //! §2.8 leaves the *channel / co-channel* pairing a parameter of the calculus.
 //! These tests pin down two readings:
@@ -13,8 +13,10 @@
 //!   stuck under `NameEquiv`.
 
 use stratum_core::congruence::name_equiv;
-use stratum_core::reduce::{step_labeled, step_labeled_with, step_with, Annihilation, NameEquiv, Sync};
-use stratum_core::term::{drop_, input, lift, output, par, quote, zero, Proc};
+use stratum_core::reduce::{
+    step_labeled, step_labeled_with, step_with, Annihilation, NameEquiv, SyncRule,
+};
+use stratum_core::term::{drop_, input, lift, output, par, quote, zero, Name, Proc};
 
 /// The reduction depth used throughout: generous enough for the one- and
 /// two-step annihilations below, small enough to stay cheap.
@@ -120,6 +122,66 @@ fn annihilation_requires_robust_reduction_to_zero() {
     assert!(
         !Annihilation { bound: BOUND }.synchronize(&x0, &x1),
         "a stray sender survives ⇒ no robust annihilation to 0",
+    );
+}
+
+/// Regression (truncation soundness): a candidate `*x0 | *x1` with one
+/// interleaving that reaches `0` within the bound **and** another interleaving
+/// that stays live past the bound must NOT be reported as annihilating.
+///
+/// Construction — a payload race on channel `a = ⌜0⌝` with two senders and two
+/// receivers:
+///
+/// ```text
+/// *x0 = a⟨|0|⟩ | a(x).*x        *x1 = a⟨|D|⟩ | a(x).0
+/// ```
+///
+/// where `D` is a divergent process on a distinct channel `c` (a derived
+/// replicator `!0`, which unfolds forever and never reaches a normal form).
+/// Two matchings exist:
+///   * `a⟨|0|⟩↔a(x).*x` (runs `0`) with `a⟨|D|⟩↔a(x).0` (discards `D`) → `0`,
+///     reached in two steps;
+///   * `a⟨|0|⟩↔a(x).0` with `a⟨|D|⟩↔a(x).*x` (runs `D`) → `D`, which diverges.
+///
+/// With `bound = 3` the first run reaches `0` while the second is still reducible
+/// on the frontier — and `D` never yields a non-`0` normal form, so the *old*
+/// code (which only rejected on a reachable non-`0` normal form) wrongly returned
+/// `true`. The truncation guard makes this a correct `false`.
+#[test]
+fn annihilation_rejects_truncated_race_reaching_zero_on_one_path_only() {
+    // `D(c) = c(y).(c[y] | *y)` — the §3 replicator.
+    fn replicator(c: Name) -> Proc {
+        input(c.clone(), move |y| par([output(c.clone(), y.clone()), drop_(y)]))
+    }
+    // `!0 on c = c⟨|D(c)|0|⟩ | D(c)` — unfolds forever (never a normal form).
+    fn divergent(c: Name) -> Proc {
+        par([
+            lift(c.clone(), par([replicator(c.clone()), zero()])),
+            replicator(c),
+        ])
+    }
+
+    let a = quote(zero()); // ⌜0⌝
+    // c ≠N a: a quoted *lift*, immune to the ⌜*x⌝ ≡N x quote-drop collapse.
+    let c = quote(lift(quote(zero()), zero()));
+    assert!(!name_equiv(&a, &c));
+
+    // *x0 = a⟨|0|⟩ | a(x).*x      (the *x receiver runs whatever it gets)
+    let x0 = quote(par([
+        lift(a.clone(), zero()),
+        input(a.clone(), drop_),
+    ]));
+    // *x1 = a⟨|D|⟩ | a(x).0        (the sender carries the divergent payload)
+    let x1 = quote(par([
+        lift(a.clone(), divergent(c)),
+        input(a, |_| zero()),
+    ]));
+
+    // bound = 3: enough for the 0-run (2 steps), while the D-run is still live.
+    assert!(
+        !Annihilation { bound: 3 }.synchronize(&x0, &x1),
+        "a within-bound run to 0 does not license annihilation while another \
+         run is still reducible at the bound",
     );
 }
 

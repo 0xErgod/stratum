@@ -62,7 +62,7 @@ pub struct Step {
 /// the *Comm-annihilation* family ([`Annihilation`]), in which two channels pair
 /// up when their dropped processes annihilate.
 ///
-/// A `Sync` implementation is the guard the [`redexes_with`] / [`step_with`] /
+/// A `SyncRule` implementation is the guard the [`redexes_with`] / [`step_with`] /
 /// [`step_labeled_with`] family consults in place of the hard-wired
 /// `name_equiv(x0, x1)`. Implementations should be *symmetric*
 /// (`synchronize(a, b) == synchronize(b, a)`) and *total* (never panic), but the
@@ -71,7 +71,7 @@ pub struct Step {
 /// The un-suffixed [`step`] / [`step_labeled`] entry points fix this parameter
 /// to [`NameEquiv`], so the default operational semantics — and every existing
 /// caller — is byte-for-byte unchanged.
-pub trait Sync {
+pub trait SyncRule {
     /// Whether a lift on `sender_chan` may communicate with an input on
     /// `receiver_chan` — i.e. whether the two are a channel / co-channel pair.
     fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool;
@@ -85,7 +85,7 @@ pub trait Sync {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NameEquiv;
 
-impl Sync for NameEquiv {
+impl SyncRule for NameEquiv {
     #[inline]
     fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool {
         name_equiv(sender_chan, receiver_chan)
@@ -116,34 +116,45 @@ impl Sync for NameEquiv {
 ///
 /// [`Annihilation`] is that approximation, made honest by two design choices:
 ///
-/// * **Drops are run.** Because this crate keeps `*⌜P⌝` inert at the process
-///   level (drop only runs under substitution — see [`crate::congruence`]),
-///   the annihilation condition is evaluated on the *dropped* processes: a
-///   channel `⌜P⌝` contributes `P` to the candidate `P0 | P1` (§2.6), while a
-///   still-bound name `x` contributes an inert `*x`. This is what makes the
-///   `⌜0⌝ / ⌜0⌝` base case reduce to `0`.
-/// * **Bounded and robust.** `synchronize(x0, x1)` is `true` iff, exploring
-///   `P0 | P1` with the ordinary reducer to depth [`bound`](Annihilation::bound)
-///   (via [`reachable`]):
-///     1. at least one reachable normal form is `0`, and
-///     2. **every** reachable normal form is `0`.
+/// * **Drops are run — under this crate's inert-drop reduction.** Because this
+///   crate keeps `*⌜P⌝` inert at the process level (drop only runs under
+///   substitution — see [`crate::congruence`]), the annihilation condition is
+///   evaluated on the *dropped* processes: a channel `⌜P⌝` contributes `P` to
+///   the candidate `P0 | P1` (§2.6), while a still-bound name `x` contributes an
+///   inert `*x`. This is what makes the `⌜0⌝ / ⌜0⌝` base case reduce to `0`.
+///   Annihilation is judged w.r.t. *this* reduction only: a nested or deferred
+///   drop such as `⌜*⌜0⌝⌝` — which would collapse to `0` under full ρ-reduction
+///   but stays the inert `*⌜0⌝` here — is conservatively **not** recognized as
+///   annihilating. That is safe under-reporting, never over-reporting.
+/// * **Bounded, terminating, and robust.** `synchronize(x0, x1)` is `true` iff,
+///   exploring `P0 | P1` with the ordinary (default-rule) reducer to depth
+///   [`bound`](Annihilation::bound):
+///     1. the exploration **settled** within the bound — every reduction
+///        sequence reached a normal form; no reducible state was left on the
+///        frontier and no non-terminating cycle was entered; **and**
+///     2. at least one such normal form is `0`, and **every** normal form is
+///        `0`.
 ///
-///   Condition (2) — *robust* annihilation — rejects channels whose drops
-///   *might* reach `0` but can also get stuck elsewhere, so a `true` verdict
-///   means every maximal reduction observed within the bound annihilates.
-///   If `P0 | P1` has no normal form within the bound (e.g. it only diverges,
-///   or the bound is too small to reach `0`), the verdict is a conservative
-///   `false`.
+///   Condition (1) closes the truncation hole: a candidate with one run to `0`
+///   *and* another run still reducible at the bound (or divergent) is **not**
+///   accepted, because that other run's fate is unknown within the bound.
+///   Condition (2) is *robust* annihilation — every settled reduction ends at
+///   `0`. If either fails (no normal form reached, a reducible state remains, or
+///   some normal form is non-`0`), the verdict is a conservative `false`.
 ///
 /// # Faithfulness
 ///
 /// This is a **decidable under-approximation**: `synchronize` may answer `false`
 /// where the undecidable paper condition would answer `true` (the bound was too
-/// small, or a non-`0` stuck state was reachable within the bound), but within
-/// the bound it never reports annihilation for a pair that can get stuck at a
-/// non-`0` normal form. Raising [`bound`](Annihilation::bound) only ever turns
-/// `false` verdicts into `true` for pairs that genuinely annihilate more slowly;
-/// it is opt-in and never affects the default [`NameEquiv`] semantics.
+/// small to let every run reach `0`, or a non-`0` stuck state was reachable),
+/// but it **never** answers `true` for a pair whose dropped processes can, under
+/// this crate's reduction, reach a normal form other than `0` — including runs
+/// that only resolve beyond the bound. A `true` verdict therefore certifies:
+/// within `bound` steps every reduction of `P0 | P1` terminated, and all
+/// terminated at `0`. Raising [`bound`](Annihilation::bound) only ever turns
+/// `false` verdicts into `true` for pairs that genuinely annihilate but need
+/// more steps to settle; it is opt-in and never affects the default
+/// [`NameEquiv`] semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Annihilation {
     /// The reduction depth to which `*x0 | *x1` is explored. Larger bounds
@@ -165,7 +176,7 @@ fn dropped_process(x: &Name) -> Proc {
     }
 }
 
-impl Sync for Annihilation {
+impl SyncRule for Annihilation {
     fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool {
         // *x0 | *x1, with the two drops run to their quoted bodies (§2.6).
         let candidate = par([
@@ -173,10 +184,25 @@ impl Sync for Annihilation {
             dropped_process(receiver_chan),
         ]);
 
-        // Explore with the ordinary reducer to the configured depth. `reachable`
-        // returns canonical forms; `0` canonicalizes to `Proc::Zero`.
+        // Explore with the ordinary (default-rule) reducer to the configured
+        // depth. `reachable_reporting` returns canonical forms plus whether the
+        // graph was left unresolved within the bound.
+        let (states, truncated) = reachable_reporting(&candidate, self.bound);
+
+        // If exploration did not settle (a reducible state remained on the
+        // frontier, or a non-terminating cycle), we cannot certify robust
+        // annihilation: conservatively decline. This is what keeps `synchronize`
+        // an honest UNDER-approximation — a candidate with one run to `0` but
+        // another run still live at the bound is not reported as annihilating.
+        if truncated {
+            return false;
+        }
+
+        // Every reduction settled within the bound: annihilation holds iff at
+        // least one normal form is `0` and none is anything else. `0`
+        // canonicalizes to `Proc::Zero`.
         let mut saw_zero = false;
-        for state in reachable(&candidate, self.bound) {
+        for state in states {
             if is_normal_form(&state) {
                 if state == Proc::Zero {
                     saw_zero = true;
@@ -216,7 +242,7 @@ fn parallel_components(p: &Proc, out: &mut Vec<Proc>) {
 ///
 /// With `sync = &`[`NameEquiv`] the guard is exactly `name_equiv(x0, x1)`, so
 /// this reproduces the standard `Comm` rule (§2.8).
-pub fn redexes_with<S: Sync>(p: &Proc, sync: &S) -> Vec<(Name, Name, Proc)> {
+pub fn redexes_with<S: SyncRule>(p: &Proc, sync: &S) -> Vec<(Name, Name, Proc)> {
     let mut comps = Vec::new();
     parallel_components(p, &mut comps);
 
@@ -274,7 +300,7 @@ pub fn step(p: &Proc) -> Vec<Proc> {
 /// The generic form of [`step`], which is exactly `step_with(p, &NameEquiv)`.
 /// Pass [`Annihilation`] to reduce under the §2.8 Comm-annihilation family
 /// instead. Each reduct is a nominal term.
-pub fn step_with<S: Sync>(p: &Proc, sync: &S) -> Vec<Proc> {
+pub fn step_with<S: SyncRule>(p: &Proc, sync: &S) -> Vec<Proc> {
     let mut succ = Vec::new();
     let mut seen = HashSet::new();
     for (_label, _message, cand) in redexes_with(p, sync) {
@@ -304,7 +330,7 @@ pub fn step_labeled(p: &Proc) -> Vec<Step> {
 /// `step_labeled_with(p, &NameEquiv)`. Labels ([`channel`](Step::channel),
 /// [`message`](Step::message)) are `≡N`-canonical regardless of `sync`; only
 /// *which* redexes fire depends on `sync`. Reducts are nominal.
-pub fn step_labeled_with<S: Sync>(p: &Proc, sync: &S) -> Vec<Step> {
+pub fn step_labeled_with<S: SyncRule>(p: &Proc, sync: &S) -> Vec<Step> {
     let mut succ = Vec::new();
     let mut seen = HashSet::new();
     for (label, message, cand) in redexes_with(p, sync) {
@@ -334,6 +360,25 @@ pub fn is_normal_form(p: &Proc) -> bool {
 /// The frontier is stepped as nominal representatives while canonical forms
 /// serve as the visited-set keys.
 pub fn reachable(start: &Proc, max_steps: usize) -> Vec<Proc> {
+    reachable_reporting(start, max_steps).0
+}
+
+/// Bounded reachability, additionally reporting whether the exploration was
+/// **truncated** — i.e. whether the reduction graph within `max_steps` was left
+/// unresolved.
+///
+/// Returns `(states, truncated)` where `states` is exactly what [`reachable`]
+/// returns (canonical forms), and `truncated` is `true` iff some state on the
+/// final frontier still has a `Comm` redex. That covers both ways exploration
+/// can fail to settle: hitting the depth `max_steps` with reducible states still
+/// on the frontier, and converging on a cycle of already-seen states that never
+/// reach a normal form. `truncated == false` therefore certifies that every
+/// reduction sequence from `start` reached a normal form within the bound; this
+/// is what lets [`Annihilation`] soundly under-approximate annihilation.
+///
+/// For the `max_steps == 0` base case the frontier is `{start}` itself, so a
+/// `start` already in normal form (e.g. `0`) is *not* truncated.
+fn reachable_reporting(start: &Proc, max_steps: usize) -> (Vec<Proc>, bool) {
     let mut seen: HashSet<Proc> = HashSet::new();
     let mut states: Vec<Proc> = Vec::new();
 
@@ -358,5 +403,10 @@ pub fn reachable(start: &Proc, max_steps: usize) -> Vec<Proc> {
         }
         frontier = next;
     }
-    states
+
+    // The exploration is truncated iff some final-frontier state is still
+    // reducible: either we exhausted `max_steps` with live states remaining, or
+    // we stopped on states whose only successors were already seen (a cycle).
+    let truncated = frontier.iter().any(|p| !step(p).is_empty());
+    (states, truncated)
 }
