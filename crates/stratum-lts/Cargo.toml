@@ -8,3 +8,10 @@ description = "Labelled transition system over ρ-calculus reduction — the tra
 
 [dependencies]
 stratum-core = { path = "../stratum-core" }
+
+[dev-dependencies]
+# Test-only back-edge: exercise the real μ-calculus checker on both the full and
+# POR LTS in the differential test. This is a dev-dependency cycle
+# (stratum-logic → stratum-lts), which Cargo permits precisely because it does
+# not affect the normal build graph.
+stratum-logic = { path = "../stratum-logic" }
