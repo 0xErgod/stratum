@@ -4,9 +4,9 @@
 use stratum_core::term::{input, lift, par, quote, zero};
 use stratum_core::Name;
 use stratum_field::observational_field;
-use stratum_lts::Lts;
 use stratum_logic::examples::emits;
 use stratum_logic::{check, check_epistemic, knows, possible, prop, Agents};
+use stratum_lts::Lts;
 
 fn pub_() -> Name {
     quote(zero()) // @0 — public channel
@@ -44,7 +44,10 @@ fn agents(lts: &Lts) -> Agents {
     let mut m = Agents::new();
     // A sees only `pub`; B sees both `pub` and `hidden`.
     m.insert("A".to_string(), observational_field(lts, &[pub_()]));
-    m.insert("B".to_string(), observational_field(lts, &[pub_(), hidden()]));
+    m.insert(
+        "B".to_string(),
+        observational_field(lts, &[pub_(), hidden()]),
+    );
     m
 }
 
@@ -59,7 +62,11 @@ fn label(p: &str, proc: &stratum_core::Proc) -> bool {
 #[test]
 fn agent_cannot_know_what_it_cannot_observe() {
     let lts = Lts::explore(&system(), 100);
-    assert_eq!(lts.num_states(), 3, "initial + two indistinguishable outcomes");
+    assert_eq!(
+        lts.num_states(),
+        3,
+        "initial + two indistinguishable outcomes"
+    );
     let ag = agents(&lts);
 
     // The state where the secret is actually out.

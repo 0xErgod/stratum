@@ -74,7 +74,10 @@ fn folded_output_contains_alias_names_not_reparseable() {
     assert!(!folded.contains('@'), "a quote leaked: {folded}");
     // And re-parsing the folded (unsugared) form is expected to fail: the
     // aliases are now unbound identifiers.
-    assert!(parse(&folded).is_err(), "folded form should not re-parse: {folded}");
+    assert!(
+        parse(&folded).is_err(),
+        "folded form should not re-parse: {folded}"
+    );
 
     // The raw form, by contrast, always re-parses (≡ the original).
     let raw = to_source(&p);

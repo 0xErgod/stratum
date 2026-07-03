@@ -85,8 +85,8 @@ fn canon_proc(p: &Proc, env: &mut Vec<u64>) -> Proc {
             }
             items.sort();
             match items.len() {
-                0 => Proc::Zero,             // empty parallel is the unit
-                1 => items.pop().unwrap(),   // singleton parallel collapses
+                0 => Proc::Zero,           // empty parallel is the unit
+                1 => items.pop().unwrap(), // singleton parallel collapses
                 _ => Proc::Par(items),
             }
         }

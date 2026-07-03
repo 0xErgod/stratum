@@ -1,10 +1,8 @@
 //! Tests for N-barbed bisimulation and may-testing equivalence.
 
-use stratum_core::term::{input, lift, quote, zero, par};
+use stratum_core::term::{input, lift, par, quote, zero};
 use stratum_core::Name;
-use stratum_equiv::{
-    may_equivalent, strong_barbed_bisimilar, weak_barbed_bisimilar, Verdict,
-};
+use stratum_equiv::{may_equivalent, strong_barbed_bisimilar, weak_barbed_bisimilar, Verdict};
 
 /// Observable channel `x = @0`.
 fn x() -> Name {
@@ -55,7 +53,9 @@ fn distinct_observable_behavior() {
 #[test]
 fn reflexive() {
     let obs = [x()];
-    assert!(weak_barbed_bisimilar(&emits_after_tau(), &emits_after_tau(), &obs, 100).is_equivalent());
+    assert!(
+        weak_barbed_bisimilar(&emits_after_tau(), &emits_after_tau(), &obs, 100).is_equivalent()
+    );
     assert!(strong_barbed_bisimilar(&emits_now(), &emits_now(), &obs, 100).is_equivalent());
 }
 
@@ -87,11 +87,16 @@ fn strong_implies_weak() {
 fn truncation_is_inconclusive() {
     use stratum_core::term::{drop_, output};
     fn replicator(c: Name) -> stratum_core::Proc {
-        input(c.clone(), move |y| par([output(c.clone(), y.clone()), drop_(y)]))
+        input(c.clone(), move |y| {
+            par([output(c.clone(), y.clone()), drop_(y)])
+        })
     }
     let c = x();
     let p = lift(quote(drop_(quote(zero()))), zero());
-    let bang = par([lift(c.clone(), par([replicator(c.clone()), p])), replicator(c)]);
+    let bang = par([
+        lift(c.clone(), par([replicator(c.clone()), p])),
+        replicator(c),
+    ]);
 
     let v = weak_barbed_bisimilar(&bang, &zero(), &[x()], 5);
     assert!(matches!(v, Verdict::Inconclusive(_)), "got {v:?}");

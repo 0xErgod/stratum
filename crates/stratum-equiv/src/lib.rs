@@ -130,22 +130,12 @@ pub fn may_equivalent(p: &Proc, q: &Proc, observations: &[Name], bound: usize) -
 }
 
 /// `P ≈N Q` — weak N-barbed bisimulation (§4).
-pub fn weak_barbed_bisimilar(
-    p: &Proc,
-    q: &Proc,
-    observations: &[Name],
-    bound: usize,
-) -> Verdict {
+pub fn weak_barbed_bisimilar(p: &Proc, q: &Proc, observations: &[Name], bound: usize) -> Verdict {
     bisimilar(p, q, observations, bound, Mode::Weak)
 }
 
 /// Strong N-barbed bisimulation: step-for-step matching with strong barbs.
-pub fn strong_barbed_bisimilar(
-    p: &Proc,
-    q: &Proc,
-    observations: &[Name],
-    bound: usize,
-) -> Verdict {
+pub fn strong_barbed_bisimilar(p: &Proc, q: &Proc, observations: &[Name], bound: usize) -> Verdict {
     bisimilar(p, q, observations, bound, Mode::Strong)
 }
 

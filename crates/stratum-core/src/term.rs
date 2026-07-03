@@ -166,7 +166,11 @@ impl Proc {
                 chan.collect_free(bound, out);
                 arg.collect_free(bound, out);
             }
-            Proc::Input { chan, bound: b, body } => {
+            Proc::Input {
+                chan,
+                bound: b,
+                body,
+            } => {
                 // The channel is in scope before the input binds its name.
                 chan.collect_free(bound, out);
                 bound.push(*b);

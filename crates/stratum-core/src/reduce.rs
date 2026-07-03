@@ -179,10 +179,7 @@ fn dropped_process(x: &Name) -> Proc {
 impl SyncRule for Annihilation {
     fn synchronize(&self, sender_chan: &Name, receiver_chan: &Name) -> bool {
         // *x0 | *x1, with the two drops run to their quoted bodies (§2.6).
-        let candidate = par([
-            dropped_process(sender_chan),
-            dropped_process(receiver_chan),
-        ]);
+        let candidate = par([dropped_process(sender_chan), dropped_process(receiver_chan)]);
 
         // Explore with the ordinary (default-rule) reducer to the configured
         // depth. `reachable_reporting` returns canonical forms plus whether the

@@ -51,9 +51,15 @@ fn main() {
     let lts = Lts::explore(&bang_s, 6);
     println!("== bang(s!(0)) accumulates copies (s = @0) ==");
     for i in 0..lts.num_states() {
-        println!("  s{i}: {} copies of s!(0)", count_lifts_on(lts.state(i), &s));
+        println!(
+            "  s{i}: {} copies of s!(0)",
+            count_lifts_on(lts.state(i), &s)
+        );
     }
-    println!("  (truncated: {} — replication is unbounded)\n", lts.is_truncated());
+    println!(
+        "  (truncated: {} — replication is unbounded)\n",
+        lts.is_truncated()
+    );
 
     // 3. Operational correspondence: `bang(0)` is `0` up to the internal channel.
     let b0 = parse(&with_stdlib("bang(0)")).unwrap();

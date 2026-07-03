@@ -48,10 +48,7 @@ fn input_binds_and_drops() {
 #[test]
 fn parallel_of_two() {
     // @0!(0) | @0(y).*y
-    let expected = par([
-        lift(quote(zero()), zero()),
-        input(quote(zero()), drop_),
-    ]);
+    let expected = par([lift(quote(zero()), zero()), input(quote(zero()), drop_)]);
     assert_parses("@0!(0) | @0(y).*y", expected);
 }
 
@@ -81,9 +78,7 @@ fn shadowing_inner_binder_wins() {
     // channel is @0. Compare against an α-renamed witness.
     let src = "@0(y).@0(z).@0(y).*y";
     let expected = input(quote(zero()), |_outer| {
-        input(quote(zero()), |_mid| {
-            input(quote(zero()), drop_)
-        })
+        input(quote(zero()), |_mid| input(quote(zero()), drop_))
     });
     assert_parses(src, expected);
 }
@@ -91,10 +86,7 @@ fn shadowing_inner_binder_wins() {
 #[test]
 fn whitespace_and_comments_ignored() {
     let src = "@0!(0)  // a lift\n  |  // then parallel\n  @0(y).*y\n";
-    let expected = par([
-        lift(quote(zero()), zero()),
-        input(quote(zero()), drop_),
-    ]);
+    let expected = par([lift(quote(zero()), zero()), input(quote(zero()), drop_)]);
     assert_parses(src, expected);
 }
 

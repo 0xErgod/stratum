@@ -26,8 +26,8 @@
 pub mod content;
 pub mod filtration;
 
-use std::collections::HashMap;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::hash::Hash;
 
 use stratum_core::{canonicalize_name, name_equiv, Name, Proc};
@@ -205,7 +205,10 @@ pub struct Agent {
 impl Agent {
     /// An observer (no control capability).
     pub fn observer(obs: Vec<Name>) -> Agent {
-        Agent { obs, ctl: Vec::new() }
+        Agent {
+            obs,
+            ctl: Vec::new(),
+        }
     }
 
     /// This agent's information field over the LTS: the pullback σ-algebra of its

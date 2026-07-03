@@ -27,3 +27,46 @@ jobs:
         run: cargo test -p stratum-syntax --features tree-sitter
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: fmt --check
+        run: cargo fmt --all -- --check
+
+  coq:
+    name: coq proof-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: coqc + coqchk (proofs/)
+        uses: coq-community/docker-coq-action@v1
+        with:
+          # Rocq/Coq 9.0.1 — matches the prover the mechanization is developed
+          # against (see proofs/Rho.v header). coqorg/coq stops at 8.20; the
+          # 9.x line lives in the successor image rocq/rocq-prover.
+          custom_image: rocq/rocq-prover:9.0.1
+          # Rocq 9.0 ships the `rocq` driver, not the `coqc`/`coqchk` aliases.
+          custom_script: |
+            {{before_script}}
+            startGroup "fix workspace permissions"
+              sudo chown -R "$(whoami):" .
+            endGroup
+            startGroup "rocq compile — Rho.v"
+              ( cd proofs && rocq compile -Q . Stratum Rho.v )
+            endGroup
+            startGroup "coqchk — kernel re-validation"
+              # `rocq compile` already kernel-checks every term; coqchk is an
+              # independent re-check of the compiled .vo. The prover-only image
+              # may not ship the standalone checker, so run it when present.
+              ( cd proofs && if command -v coqchk >/dev/null 2>&1; then
+                  coqchk -silent -Q . Stratum Stratum.Rho
+                else
+                  echo "::notice::coqchk not in image; relying on compile-time kernel check"
+                fi )
+            endGroup

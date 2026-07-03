@@ -47,7 +47,9 @@ fn name_equiv_reproduces_default() {
     // Also on a nondeterministic term (one sender, two distinct receivers).
     let a = quote(zero());
     let r1 = input(a.clone(), |_| lift(quote(drop_(quote(zero()))), zero()));
-    let r2 = input(a.clone(), |_| lift(quote(output(quote(zero()), quote(zero()))), zero()));
+    let r2 = input(a.clone(), |_| {
+        lift(quote(output(quote(zero()), quote(zero()))), zero())
+    });
     let branching = par([lift(a, zero()), r1, r2]);
 
     let via_trait = step_labeled_with(&branching, &NameEquiv);
@@ -151,7 +153,9 @@ fn annihilation_requires_robust_reduction_to_zero() {
 fn annihilation_rejects_truncated_race_reaching_zero_on_one_path_only() {
     // `D(c) = c(y).(c[y] | *y)` — the §3 replicator.
     fn replicator(c: Name) -> Proc {
-        input(c.clone(), move |y| par([output(c.clone(), y.clone()), drop_(y)]))
+        input(c.clone(), move |y| {
+            par([output(c.clone(), y.clone()), drop_(y)])
+        })
     }
     // `!0 on c = c⟨|D(c)|0|⟩ | D(c)` — unfolds forever (never a normal form).
     fn divergent(c: Name) -> Proc {
@@ -162,20 +166,14 @@ fn annihilation_rejects_truncated_race_reaching_zero_on_one_path_only() {
     }
 
     let a = quote(zero()); // ⌜0⌝
-    // c ≠N a: a quoted *lift*, immune to the ⌜*x⌝ ≡N x quote-drop collapse.
+                           // c ≠N a: a quoted *lift*, immune to the ⌜*x⌝ ≡N x quote-drop collapse.
     let c = quote(lift(quote(zero()), zero()));
     assert!(!name_equiv(&a, &c));
 
     // *x0 = a⟨|0|⟩ | a(x).*x      (the *x receiver runs whatever it gets)
-    let x0 = quote(par([
-        lift(a.clone(), zero()),
-        input(a.clone(), drop_),
-    ]));
+    let x0 = quote(par([lift(a.clone(), zero()), input(a.clone(), drop_)]));
     // *x1 = a⟨|D|⟩ | a(x).0        (the sender carries the divergent payload)
-    let x1 = quote(par([
-        lift(a.clone(), divergent(c)),
-        input(a, |_| zero()),
-    ]));
+    let x1 = quote(par([lift(a.clone(), divergent(c)), input(a, |_| zero())]));
 
     // bound = 3: enough for the 0-run (2 steps), while the D-run is still live.
     assert!(
@@ -214,7 +212,11 @@ fn golden_annihilation_reduces_where_default_is_stuck() {
 
     // Annihilation: fires, and the sole reduct is 0.
     let reducts = step_with(&system, &Annihilation { bound: BOUND });
-    assert_eq!(reducts.len(), 1, "the annihilation redex fires exactly once");
+    assert_eq!(
+        reducts.len(),
+        1,
+        "the annihilation redex fires exactly once"
+    );
 
     let canon: Vec<Proc> = reducts
         .iter()

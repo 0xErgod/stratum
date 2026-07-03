@@ -290,7 +290,9 @@ impl<'a> Resolver<'a> {
             return match binding {
                 Binding::Var(_) => Err(err(
                     pos,
-                    format!("`{x}` is bound as a name here; write `*{x}` to drop it into a process"),
+                    format!(
+                        "`{x}` is bound as a name here; write `*{x}` to drop it into a process"
+                    ),
                 )),
                 Binding::NewName(_) => Err(err(
                     pos,
@@ -536,7 +538,8 @@ pub(crate) fn check_acyclic(
         Grey,
         Black,
     }
-    let mut colour: HashMap<&str, Colour> = defs.keys().map(|k| (k.as_str(), Colour::White)).collect();
+    let mut colour: HashMap<&str, Colour> =
+        defs.keys().map(|k| (k.as_str(), Colour::White)).collect();
     // Iterative DFS with an explicit stack to avoid deep recursion.
     for start in defs.keys() {
         if colour[start.as_str()] != Colour::White {
@@ -576,7 +579,12 @@ pub(crate) fn check_acyclic(
 }
 
 /// Collect the free references to *definition* names within a fragment.
-fn collect_refs(s: &S, defs: &HashMap<String, Def>, locals: &mut Vec<String>, out: &mut Vec<String>) {
+fn collect_refs(
+    s: &S,
+    defs: &HashMap<String, Def>,
+    locals: &mut Vec<String>,
+    out: &mut Vec<String>,
+) {
     match s {
         S::Zero => {}
         S::Drop(n) => collect_refs(n, defs, locals, out),

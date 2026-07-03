@@ -105,8 +105,16 @@ mod reference {
                 name_equiv(c1, c2) && equiv(a1, a2)
             }
             (
-                Proc::Input { chan: c1, bound: b1, body: body1 },
-                Proc::Input { chan: c2, bound: b2, body: body2 },
+                Proc::Input {
+                    chan: c1,
+                    bound: b1,
+                    body: body1,
+                },
+                Proc::Input {
+                    chan: c2,
+                    bound: b2,
+                    body: body2,
+                },
             ) => {
                 if !name_equiv(c1, c2) {
                     return false;

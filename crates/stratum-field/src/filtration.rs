@@ -85,7 +85,14 @@ pub fn enumerate_traces(lts: &Lts, max_len: usize) -> Vec<Trace> {
     let mut states = vec![lts.initial()];
     let mut labels: Vec<Name> = Vec::new();
     let mut messages: Vec<Name> = Vec::new();
-    dfs(lts, max_len, &mut states, &mut labels, &mut messages, &mut out);
+    dfs(
+        lts,
+        max_len,
+        &mut states,
+        &mut labels,
+        &mut messages,
+        &mut out,
+    );
     out
 }
 

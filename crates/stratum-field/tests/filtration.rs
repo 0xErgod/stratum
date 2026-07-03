@@ -1,7 +1,7 @@
 //! Tests for time-as-filtration (SPEC §F11): `Ω` = runs, `F_t` = knowledge after
 //! `t` steps, non-decreasing in information.
 
-use stratum_core::term::{input, lift, quote, zero, par};
+use stratum_core::term::{input, lift, par, quote, zero};
 use stratum_core::{canonicalize_name, name_equiv, Name, Proc};
 use stratum_field::filtration::{enumerate_traces, filtration, is_filtration};
 use stratum_field::Field;
@@ -127,7 +127,7 @@ fn trace_records_channel_message_pairs() {
     let req = quote(zero()); // firing channel @0
     let ack = ch(1); // a distinct reply channel nobody listens on
     let sys = par([
-        lift(req.clone(), zero()), // req⟨|0|⟩
+        lift(req.clone(), zero()),                              // req⟨|0|⟩
         input(req.clone(), move |_| lift(ack.clone(), zero())), // req(x).ack⟨|0|⟩
     ]);
     let lts = Lts::explore(&sys, 100);

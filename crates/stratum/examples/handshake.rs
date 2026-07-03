@@ -39,7 +39,11 @@ fn main() {
         lts.is_truncated(),
     );
     for i in 0..lts.num_states() {
-        let mark = if lts.is_terminal(i) { " [terminal]" } else { "" };
+        let mark = if lts.is_terminal(i) {
+            " [terminal]"
+        } else {
+            ""
+        };
         println!("  s{i}: {}{mark}", format_proc(lts.state(i)));
     }
     println!();
