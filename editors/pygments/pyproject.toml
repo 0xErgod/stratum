@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stratum-pygments"
+version = "0.1.0"
+description = "Pygments lexer for the Stratum reflective ρ-calculus surface syntax (.strat)."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Stratum" }]
+keywords = ["pygments", "lexer", "stratum", "rho-calculus", "process-calculus"]
+dependencies = ["Pygments>=2.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/0xErgod/stratum"
+
+# Registering the lexer here makes `pygmentize -l stratum` and every Pygments
+# consumer discover it by name after `pip install`.
+[project.entry-points."pygments.lexers"]
+stratum = "stratum_pygments.lexer:StratumLexer"
+
+[tool.setuptools]
+packages = ["stratum_pygments"]

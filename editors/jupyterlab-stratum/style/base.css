@@ -1,0 +1,7 @@
+/*
+ * The Stratum language extension only registers a CodeMirror 6 language;
+ * token colours come from the active JupyterLab theme's highlight style
+ * (which maps the @lezer/highlight tags this extension emits). No custom CSS
+ * is required — this file exists so the standard labextension scaffold has a
+ * style entry point.
+ */

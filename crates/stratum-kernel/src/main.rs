@@ -486,8 +486,10 @@ async fn control_loop(
     }
 }
 
-/// Build the `kernel_info_reply` content. Highlighting fields are placeholders
-/// (`"text"`) in Phase 0; a real Pygments lexer / CodeMirror mode land later.
+/// Build the `kernel_info_reply` content. `pygments_lexer` names the Stratum
+/// Pygments lexer shipped under `editors/pygments/` (installed separately);
+/// `.strat` cells are live-highlighted in JupyterLab 4 via the CodeMirror 6
+/// language keyed off the `text/x-stratum` mimetype (`editors/jupyterlab-stratum/`).
 fn kernel_info_content() -> Value {
     json!({
         "status": "ok",
@@ -499,8 +501,8 @@ fn kernel_info_content() -> Value {
             "version": env!("CARGO_PKG_VERSION"),
             "mimetype": "text/x-stratum",
             "file_extension": ".strat",
-            "pygments_lexer": "text",
-            "codemirror_mode": "text",
+            "pygments_lexer": "stratum",
+            "codemirror_mode": "text/x-stratum",
         },
         "banner": "Stratum kernel — executable core for the πρσϕ-Formalism (reflective ρ-calculus). DSL cells define processes; %-directives explore, model-check, and compare them. Try %help.",
         "help_links": [],
