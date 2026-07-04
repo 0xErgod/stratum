@@ -293,6 +293,24 @@ pub(crate) fn collect_names(p: &Proc, out: &mut Vec<Name>) {
     }
 }
 
+/// The default observation set shared by the `%bisim` directive and the `bisim`
+/// binding in a `%%rune` script: every channel occurring in either process,
+/// deduplicated up to structural congruence. Keeping this in one place stops the
+/// directive and the scripted binding from silently drifting out of faithfulness.
+pub(crate) fn default_observations(p: &Proc, q: &Proc) -> Vec<Name> {
+    let mut raw = Vec::new();
+    collect_names(p, &mut raw);
+    collect_names(q, &mut raw);
+    let mut out: Vec<Name> = Vec::new();
+    for n in raw {
+        let c = canonicalize_name(&n);
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn collect_names_in_name(n: &Name, out: &mut Vec<Name>) {
     if let Name::Quote(p) = n {
         collect_names(p, out);

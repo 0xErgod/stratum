@@ -6,7 +6,7 @@
 //! toolkit logic (parse, explore, check, bisim, typecheck) is invoked here and
 //! immediately rendered; nothing panics on bad input.
 
-use stratum::core::{canonicalize, canonicalize_name, step_labeled, Name, Proc};
+use stratum::core::{canonicalize, step_labeled, Name, Proc};
 use stratum::equiv::{strong_barbed_bisimilar, weak_barbed_bisimilar};
 use stratum::logic::{counterexample, holds_checked, witness};
 use stratum::lts::Lts;
@@ -18,7 +18,7 @@ use crate::render::{
     render_checked, render_lts, render_proc, render_run, render_typecheck, render_verdict,
     MimeBundle,
 };
-use crate::{collect_names, CellError, CellOutcome, Namespace, Obj, Reduction};
+use crate::{default_observations, CellError, CellOutcome, Namespace, Obj, Reduction};
 
 /// The default bounded-exploration state cap for directives that build an LTS.
 const DEFAULT_BOUND: usize = 1000;
@@ -509,22 +509,6 @@ fn resolve_names(idents: &[String], ns: &Namespace) -> Result<Vec<Name>, CellErr
         .collect()
 }
 
-/// The default observation set for `%bisim`: every channel occurring in either
-/// process, deduplicated up to structural congruence.
-fn default_observations(p: &Proc, q: &Proc) -> Vec<Name> {
-    let mut raw = Vec::new();
-    collect_names(p, &mut raw);
-    collect_names(q, &mut raw);
-    let mut out: Vec<Name> = Vec::new();
-    for n in raw {
-        let c = canonicalize_name(&n);
-        if !out.contains(&c) {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// Parse a minimal typing environment: `a:Ty, b:Ty, ...` where `Ty` is `Nil`,
 /// `Proc`, or `Chan(Ty)`. Channel names resolve via the namespace.
 fn parse_env(src: &str, ns: &Namespace) -> Result<Env, CellError> {
@@ -704,7 +688,9 @@ stratum::parse(src) -> proc; stratum::explore(p, bound) / explore_por / _symmetr
 stratum::witness / counterexample(lts, f) -> [state indices]; stratum::bisim(p, q,
 weak) -> verdict; stratum::get(name) / set(name, value) read / write bindings.
 `println!(...)` is captured as the cell's stdout; the final expression is the
-display. A runaway script trips an instruction budget and errors cleanly.
+display. A runaway Rune loop trips a per-instruction budget and errors cleanly;
+the budget does NOT bound work inside a single native call (a big explore/check/
+bisim is limited only by its own arguments, e.g. the exploration state cap).
 
 Formula fragment: EF/AG/AF/EG/EX φ, φ & ψ, φ | ψ, !φ, ( ), and the atomic
 proposition emits(<name>) — a top-level OUTPUT barb on the named channel.

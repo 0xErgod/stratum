@@ -49,10 +49,18 @@
 //!
 //! ## Safety
 //!
-//! The VM runs under a per-instruction [budget](RUNE_BUDGET); a runaway script
-//! exhausts the budget and surfaces a clean `RuneBudgetError` instead of hanging
-//! the kernel. Compile and runtime errors become clean [`CellError`]s (with
-//! Rune's own diagnostics formatted into the traceback); nothing here panics.
+//! The VM runs under a per-instruction [budget](RUNE_BUDGET); a runaway *Rune*
+//! loop exhausts the budget and surfaces a clean `RuneBudgetError` instead of
+//! hanging the kernel. Compile and runtime errors become clean [`CellError`]s
+//! (with Rune's own diagnostics formatted into the traceback); nothing here
+//! panics.
+//!
+//! The budget counts Rune VM instructions only — it does **not** bound work
+//! *inside* a native call. A single `explore(p, huge_bound)` / `check(...)` /
+//! `bisim(...)` is one instruction as far as the budget is concerned, so its
+//! cost is governed solely by its own arguments (e.g. the exploration state
+//! cap), not by the budget. The budget protects against runaway *scripting*
+//! (loops, recursion), not against an expensive single toolkit call.
 
 use std::sync::{Arc, Mutex};
 
@@ -61,7 +69,7 @@ use rune::runtime::{budget, Value, VmResult};
 use rune::termcolor::Buffer;
 use rune::{Any, Context, ContextError, Diagnostics, Module, Source, Sources, Vm};
 
-use stratum::core::{canonicalize, canonicalize_name, is_normal_form, step, Name, Proc};
+use stratum::core::{canonicalize, is_normal_form, step, Name, Proc};
 use stratum::equiv::{strong_barbed_bisimilar, weak_barbed_bisimilar, Verdict};
 use stratum::logic::{counterexample, holds_checked, witness};
 use stratum::lts::Lts;
@@ -390,7 +398,7 @@ fn fn_run(ns: &SharedNs, l: &ScLts, formula: &str, counter: bool) -> VmResult<Ve
 }
 
 fn fn_bisim(p: &ScProc, q: &ScProc, weak: bool) -> VmResult<ScVerdict> {
-    let obs = default_observations(&p.0, &q.0);
+    let obs = crate::default_observations(&p.0, &q.0);
     let bound = DEFAULT_SCRIPT_BOUND;
     let verdict = if weak {
         weak_barbed_bisimilar(&p.0, &q.0, &obs, bound)
@@ -461,23 +469,6 @@ fn resolve_channels(ns: &SharedNs, idents: &[String]) -> Result<Vec<Name>, Strin
         .collect()
 }
 
-/// The default observation set for `bisim`: every channel occurring in either
-/// process, deduplicated up to structural congruence. Mirrors the `%bisim`
-/// directive's default so a scripted verdict matches the directive.
-fn default_observations(p: &Proc, q: &Proc) -> Vec<Name> {
-    let mut raw = Vec::new();
-    crate::collect_names(p, &mut raw);
-    crate::collect_names(q, &mut raw);
-    let mut out: Vec<Name> = Vec::new();
-    for n in raw {
-        let c = canonicalize_name(&n);
-        if !out.contains(&c) {
-            out.push(c);
-        }
-    }
-    out
-}
-
 fn verdict_string(v: &Verdict) -> String {
     match v {
         Verdict::Equivalent => "Equivalent".to_string(),
@@ -502,12 +493,18 @@ pub(crate) fn run_rune(body: &str, ns: &mut Namespace) -> CellOutcome {
     // Move the namespace into a shared handle the module functions can reach.
     let shared: SharedNs = Arc::new(Mutex::new(std::mem::take(ns)));
 
+    // `mem::take` above left the caller's namespace defaulted (empty). Restore it
+    // via a Drop guard so the write-back happens on EVERY exit path — including a
+    // Rust unwind out of `run_inner` (which the kernel's `catch_unwind` would
+    // otherwise turn into an error reply *with the whole session already wiped*).
+    // Cloning back is robust regardless of any lingering Arc reference count.
+    let _restore = NsRestore {
+        ns,
+        shared: shared.clone(),
+    };
+
     let io = CaptureIo::new();
     let (display, error) = run_inner(body, &shared, &io);
-
-    // Restore the (possibly `set`-mutated) namespace. Cloning back is robust
-    // regardless of any lingering Arc reference count.
-    *ns = lock(&shared).clone();
 
     // Drain captured stdout.
     let mut buf: Vec<u8> = Vec::new();
@@ -518,6 +515,23 @@ pub(crate) fn run_rune(body: &str, ns: &mut Namespace) -> CellOutcome {
         displays: display.into_iter().collect(),
         stream_stdout,
         error,
+    }
+    // `_restore` drops here (or during an unwind), writing `shared` back into the
+    // caller's `&mut Namespace`.
+}
+
+/// Drop guard that writes the shared session namespace back into the caller's
+/// `&mut Namespace` when it drops — on the normal path, the error path, and
+/// during an unwind — so a mid-script panic can never leave the session wiped by
+/// the `mem::take` in [`run_rune`].
+struct NsRestore<'a> {
+    ns: &'a mut Namespace,
+    shared: SharedNs,
+}
+
+impl Drop for NsRestore<'_> {
+    fn drop(&mut self) {
+        *self.ns = lock(&self.shared).clone();
     }
 }
 
@@ -555,8 +569,8 @@ fn run_inner(
     };
 
     // Wrap the cell body as the body of an implicit `pub fn main()` unless the
-    // user defines their own `fn main`.
-    let program = if body.contains("fn main") {
+    // user defines their own `fn main` item.
+    let program = if defines_main(body) {
         body.to_string()
     } else {
         format!("pub fn main() {{\n{body}\n}}\n")
@@ -719,4 +733,121 @@ fn render_sclts(l: &ScLts) -> MimeBundle {
         bundle.text_plain = format!("{}\n[caveat] {caveat}", bundle.text_plain);
     }
     bundle
+}
+
+/// Whether the script defines its own `fn main` *item* (so we must not wrap it).
+///
+/// Token-aware, to avoid the false positive of the literal text `fn main`
+/// appearing inside a string or comment (e.g. `let s = "fn main";`): comments
+/// and string / char literals are blanked out first, then we look for two
+/// adjacent identifier tokens `fn` `main`.
+fn defines_main(body: &str) -> bool {
+    let code = blank_strings_and_comments(body);
+    let mut prev = "";
+    for word in code.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+        if word.is_empty() {
+            continue;
+        }
+        if prev == "fn" && word == "main" {
+            return true;
+        }
+        prev = word;
+    }
+    false
+}
+
+/// Replace the contents of comments and string / char literals with spaces so a
+/// downstream token scan never trips over code-looking text inside them. A
+/// lightweight, non-nesting heuristic — good enough to gate the `main` wrapper.
+fn blank_strings_and_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'/') => {
+                // Line comment: drop to (and keep) the newline.
+                for c2 in chars.by_ref() {
+                    if c2 == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                // Block comment: drop to the closing `*/`.
+                chars.next();
+                let mut prev = '\0';
+                for c2 in chars.by_ref() {
+                    if prev == '*' && c2 == '/' {
+                        break;
+                    }
+                    prev = c2;
+                }
+                out.push(' ');
+            }
+            '"' | '`' | '\'' => {
+                skip_delimited(&mut chars, c);
+                out.push(' ');
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Consume characters up to and including the next unescaped `delim`.
+fn skip_delimited<I: Iterator<Item = char>>(chars: &mut I, delim: char) {
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            chars.next(); // skip the escaped character
+            continue;
+        }
+        if c == delim {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defines_main_is_token_aware() {
+        assert!(defines_main("pub fn main() { 1 }"));
+        assert!(defines_main("fn helper() {}\nfn main() { 0 }"));
+        assert!(defines_main("async fn main() {}"));
+        // The literal text in a string / comment must NOT count as a definition.
+        assert!(!defines_main("let s = \"fn main\";"));
+        assert!(!defines_main("// fn main\nlet x = 1;"));
+        assert!(!defines_main("/* fn main */ let x = 1;"));
+        assert!(!defines_main("let fn_main = 0;"));
+        assert!(!defines_main("stratum::parse(\"a!(0)\")"));
+    }
+
+    #[test]
+    fn ns_restore_guard_writes_back_on_unwind() {
+        // A panic while the guard is live must still restore the caller's
+        // namespace from the shared handle — never leave it wiped by `mem::take`.
+        let mut ns = Namespace::new();
+        ns.insert("keep", Obj::Bool(true));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let shared: SharedNs = Arc::new(Mutex::new(std::mem::take(&mut ns)));
+            let _restore = NsRestore {
+                ns: &mut ns,
+                shared: shared.clone(),
+            };
+            // Mutate through the shared handle, then unwind before any manual
+            // write-back could run.
+            shared.lock().unwrap().insert("added", Obj::Int(7));
+            panic!("boom");
+        }));
+
+        assert!(result.is_err(), "the closure must have panicked");
+        // The guard ran during unwinding: the original binding survived and the
+        // mid-panic mutation was preserved.
+        assert!(matches!(ns.get("keep"), Some(Obj::Bool(true))));
+        assert!(matches!(ns.get("added"), Some(Obj::Int(7))));
+    }
 }
