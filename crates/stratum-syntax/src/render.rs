@@ -127,12 +127,15 @@ fn go_name(
         }
     }
     match name {
+        // A bound variable resolves to its enclosing input binder; a Var with no
+        // binder in scope (e.g. a canonical/de-Bruijn LTS state, or an open term)
+        // falls back to `v{sym}` rather than panicking — a total renderer.
         Name::Var(sym) => env
             .iter()
             .rev()
             .find(|(s, _)| s == sym)
             .map(|(_, id)| id.clone())
-            .expect("closed term: every Var resolves to an enclosing binder"),
+            .unwrap_or_else(|| format!("v{sym}")),
         Name::Quote(p) => match &**p {
             Proc::Zero => "@0".to_string(),
             other => format!("@({})", go_proc(other, env, counter, aliases)),
@@ -257,12 +260,14 @@ fn latex_name(
         }
     }
     match name {
+        // Total, like `go_name`: an unresolved Var (canonical/open term) renders
+        // as `v_{sym}` instead of panicking.
         Name::Var(sym) => env
             .iter()
             .rev()
             .find(|(s, _)| s == sym)
             .map(|(_, id)| id.clone())
-            .expect("closed term: every Var resolves to an enclosing binder"),
+            .unwrap_or_else(|| format!("v_{{{sym}}}")),
         Name::Quote(p) => {
             format!(r"\ulcorner {} \urcorner", latex_proc(p, env, counter, aliases))
         }
