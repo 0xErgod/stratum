@@ -48,6 +48,12 @@ impl std::fmt::Display for FormulaError {
     }
 }
 
+/// Maximum formula-parser recursion depth. Past this we bail with a clean
+/// [`FormulaError`] rather than overflowing the native stack (a deeply-nested
+/// `EF ( EF ( … ) )` would otherwise abort the whole process — uncatchable by
+/// `catch_unwind`). Issue #43 tracks a proper depth guard in the toolkit.
+const MAX_FORMULA_DEPTH: usize = 256;
+
 /// A compiled formula plus the atomic `emits` propositions it references.
 #[derive(Debug, Clone)]
 pub struct CompiledFormula {
@@ -55,6 +61,9 @@ pub struct CompiledFormula {
     pub formula: Formula,
     /// `(generated prop id, resolved channel)` for each `emits(...)` atom.
     pub props: Vec<(String, Name)>,
+    /// Whether the formula uses the raw next-time modality `EX`. Callers reject
+    /// `EX` against reduced (POR/symmetry) LTSs, which do not preserve it.
+    pub uses_ex: bool,
 }
 
 impl CompiledFormula {
@@ -173,6 +182,8 @@ struct Parser<'a> {
     props: Vec<(String, Name)>,
     next_id: usize,
     end_column: usize,
+    /// Set when an `EX` modality is parsed (see [`CompiledFormula::uses_ex`]).
+    uses_ex: bool,
 }
 
 impl Parser<'_> {
@@ -190,61 +201,79 @@ impl Parser<'_> {
         self.pos += 1;
     }
 
-    fn parse_or(&mut self) -> Result<Formula, FormulaError> {
-        let mut left = self.parse_and()?;
+    /// Bail with a clean error once the recursive descent gets pathologically
+    /// deep, so a crafted formula cannot overflow the native stack.
+    fn check_depth(&self, depth: usize) -> Result<(), FormulaError> {
+        if depth > MAX_FORMULA_DEPTH {
+            Err(FormulaError {
+                column: self.column(),
+                message: format!("formula nesting too deep (max {MAX_FORMULA_DEPTH})"),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn parse_or(&mut self, depth: usize) -> Result<Formula, FormulaError> {
+        self.check_depth(depth)?;
+        let mut left = self.parse_and(depth + 1)?;
         while matches!(self.peek(), Some(Tok::Or)) {
             self.bump();
-            let right = self.parse_and()?;
+            let right = self.parse_and(depth + 1)?;
             left = f_or(left, right);
         }
         Ok(left)
     }
 
-    fn parse_and(&mut self) -> Result<Formula, FormulaError> {
-        let mut left = self.parse_unary()?;
+    fn parse_and(&mut self, depth: usize) -> Result<Formula, FormulaError> {
+        self.check_depth(depth)?;
+        let mut left = self.parse_unary(depth + 1)?;
         while matches!(self.peek(), Some(Tok::And)) {
             self.bump();
-            let right = self.parse_unary()?;
+            let right = self.parse_unary(depth + 1)?;
             left = f_and(left, right);
         }
         Ok(left)
     }
 
-    fn parse_unary(&mut self) -> Result<Formula, FormulaError> {
+    fn parse_unary(&mut self, depth: usize) -> Result<Formula, FormulaError> {
+        self.check_depth(depth)?;
         match self.peek() {
             Some(Tok::Not) => {
                 self.bump();
-                Ok(neg(self.parse_unary()?))
+                Ok(neg(self.parse_unary(depth + 1)?))
             }
             Some(Tok::Ef) => {
                 self.bump();
-                Ok(ef(self.parse_unary()?))
+                Ok(ef(self.parse_unary(depth + 1)?))
             }
             Some(Tok::Ag) => {
                 self.bump();
-                Ok(ag(self.parse_unary()?))
+                Ok(ag(self.parse_unary(depth + 1)?))
             }
             Some(Tok::Af) => {
                 self.bump();
-                Ok(af(self.parse_unary()?))
+                Ok(af(self.parse_unary(depth + 1)?))
             }
             Some(Tok::Eg) => {
                 self.bump();
-                Ok(eg(self.parse_unary()?))
+                Ok(eg(self.parse_unary(depth + 1)?))
             }
             Some(Tok::Ex) => {
                 self.bump();
-                Ok(ex(self.parse_unary()?))
+                self.uses_ex = true;
+                Ok(ex(self.parse_unary(depth + 1)?))
             }
-            _ => self.parse_atom(),
+            _ => self.parse_atom(depth + 1),
         }
     }
 
-    fn parse_atom(&mut self) -> Result<Formula, FormulaError> {
+    fn parse_atom(&mut self, depth: usize) -> Result<Formula, FormulaError> {
+        self.check_depth(depth)?;
         match self.peek() {
             Some(Tok::LParen) => {
                 self.bump();
-                let inner = self.parse_or()?;
+                let inner = self.parse_or(depth + 1)?;
                 match self.peek() {
                     Some(Tok::RParen) => {
                         self.bump();
@@ -331,8 +360,9 @@ pub fn parse_formula(
         props: Vec::new(),
         next_id: 0,
         end_column,
+        uses_ex: false,
     };
-    let formula = parser.parse_or()?;
+    let formula = parser.parse_or(0)?;
     if parser.pos != parser.toks.len() {
         return Err(FormulaError {
             column: parser.column(),
@@ -342,5 +372,6 @@ pub fn parse_formula(
     Ok(CompiledFormula {
         formula,
         props: parser.props,
+        uses_ex: parser.uses_ex,
     })
 }

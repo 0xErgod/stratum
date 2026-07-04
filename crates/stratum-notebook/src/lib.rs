@@ -44,6 +44,54 @@ pub use render::{
     render_verdict, MimeBundle,
 };
 
+/// How an [`Lts`] binding was reduced during exploration — which determines the
+/// class of temporal properties whose verdicts are trustworthy against it.
+///
+/// Partial-order and symmetry reduction both drop the raw next-time (`EX`)
+/// branching structure, so a reduced LTS must not be `%check`ed with `EX`, and
+/// other verdicts carry a caveat about the preserved fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reduction {
+    /// Full exploration (`%explore`): every property is preserved.
+    #[default]
+    None,
+    /// Partial-order reduction (`%explore ... por`): preserves reachability /
+    /// safety of barbs, not full branching structure.
+    Por,
+    /// Symmetry reduction (`%explore ... sym=...`): preserves
+    /// symmetry-invariant properties.
+    Symmetry,
+}
+
+impl Reduction {
+    /// A short human-readable name.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Reduction::None => "full",
+            Reduction::Por => "partial-order reduced",
+            Reduction::Symmetry => "symmetry reduced",
+        }
+    }
+
+    /// The caveat describing the fragment whose verdicts remain valid, or `None`
+    /// for an unreduced LTS.
+    #[must_use]
+    pub fn caveat(self) -> Option<&'static str> {
+        match self {
+            Reduction::None => None,
+            Reduction::Por => Some(
+                "partial-order reduced LTS: the verdict is only sound for \
+                 reachability / safety of barbs, not full branching (no EX).",
+            ),
+            Reduction::Symmetry => Some(
+                "symmetry reduced LTS: the verdict is only sound for \
+                 symmetry-invariant properties (no EX).",
+            ),
+        }
+    }
+}
+
 /// A value bound in a notebook [`Namespace`].
 ///
 /// The variants grow as directives learn to produce new kinds of result; each
@@ -52,8 +100,13 @@ pub use render::{
 pub enum Obj {
     /// A process defined by a DSL cell or an `%expand` / inline directive.
     Proc(Proc),
-    /// A trace LTS produced by `%explore`.
-    Lts(Lts),
+    /// A trace LTS produced by `%explore`, tagged with how it was reduced.
+    Lts {
+        /// The explored transition system.
+        lts: Lts,
+        /// The reduction applied during exploration.
+        reduction: Reduction,
+    },
     /// An equivalence verdict produced by `%bisim`.
     Verdict(Verdict),
     /// A model-checking result produced by `%check`.
@@ -70,7 +123,7 @@ impl Obj {
     pub fn kind(&self) -> &'static str {
         match self {
             Obj::Proc(_) => "proc",
-            Obj::Lts(_) => "lts",
+            Obj::Lts { .. } => "lts",
             Obj::Verdict(_) => "verdict",
             Obj::Checked(_) => "checked",
             Obj::Bool(_) => "bool",
@@ -128,7 +181,16 @@ impl Namespace {
     #[must_use]
     pub fn get_lts(&self, name: &str) -> Option<&Lts> {
         match self.objs.get(name) {
-            Some(Obj::Lts(l)) => Some(l),
+            Some(Obj::Lts { lts, .. }) => Some(lts),
+            _ => None,
+        }
+    }
+
+    /// Look up a bound LTS together with the [`Reduction`] it was explored under.
+    #[must_use]
+    pub fn get_lts_binding(&self, name: &str) -> Option<(&Lts, Reduction)> {
+        match self.objs.get(name) {
+            Some(Obj::Lts { lts, reduction }) => Some((lts, *reduction)),
             _ => None,
         }
     }
@@ -160,10 +222,17 @@ impl Namespace {
         self.aliases = aliases;
     }
 
-    /// Allocate the next auto-generated binding name (`_1`, `_2`, …).
+    /// Allocate the next auto-generated binding name (`_1`, `_2`, …), skipping
+    /// any name the user has already bound explicitly so an auto name never
+    /// clobbers a `_N =` binding.
     pub(crate) fn next_auto_name(&mut self) -> String {
-        self.auto_counter += 1;
-        format!("_{}", self.auto_counter)
+        loop {
+            self.auto_counter += 1;
+            let candidate = format!("_{}", self.auto_counter);
+            if !self.objs.contains_key(&candidate) {
+                return candidate;
+            }
+        }
     }
 }
 

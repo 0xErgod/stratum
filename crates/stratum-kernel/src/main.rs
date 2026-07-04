@@ -5,11 +5,13 @@
 //! `libzmq`, which matters on Windows — and delegates all cell-level work to the
 //! substrate-agnostic [`stratum_notebook`] core.
 //!
-//! Phase 0 is a *walking skeleton*: it proves the wire protocol end to end
-//! (HMAC signing, multipart framing, the five sockets, the handshake) by
-//! answering `kernel_info_request` and echoing `execute_request` cells back as
-//! output. Language-aware evaluation arrives in later phases inside
-//! `stratum-notebook`.
+//! The wire protocol (HMAC signing, multipart framing, the five sockets, the
+//! handshake) is proven end to end by the acceptance test. `execute_request`
+//! cells are evaluated by [`stratum_notebook::evaluate`] against a persistent
+//! session [`Namespace`]; the resulting MIME bundles / errors are translated
+//! into iopub `display_data` / `error` messages. The `evaluate` call is
+//! `catch_unwind`-guarded so an ordinary panic in the core surfaces as an error
+//! reply rather than tearing down the session.
 //!
 //! ## Sockets
 //!
@@ -33,7 +35,7 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 use zeromq::{PubSocket, RepSocket, RouterSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
-use stratum_notebook::{CellOutcome, MimeBundle, Namespace};
+use stratum_notebook::{CellError, CellOutcome, MimeBundle, Namespace};
 use wire::{ConnectionInfo, Header, Message, Outgoing, PROTOCOL_VERSION};
 
 /// Shared handle to the single PUB socket used for all iopub broadcasts.
@@ -223,7 +225,24 @@ async fn handle_shell(
 
             // Delegate all cell-level work to the substrate-agnostic notebook
             // core, which mutates the persistent session namespace.
-            let outcome: CellOutcome = stratum_notebook::evaluate(&code, namespace);
+            //
+            // Defense-in-depth: contain an *ordinary* panic in the notebook core
+            // so one bad cell surfaces as an error reply rather than tearing down
+            // the shell loop / session. (A stack overflow is uncatchable — the
+            // depth guards inside `stratum-notebook` are what prevent that.)
+            let outcome: CellOutcome =
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    stratum_notebook::evaluate(&code, namespace)
+                })) {
+                    Ok(outcome) => outcome,
+                    Err(payload) => {
+                        let detail = panic_detail(&*payload);
+                        CellOutcome::err(CellError::new(
+                            "InternalError",
+                            format!("internal error while evaluating the cell: {detail}"),
+                        ))
+                    }
+                };
 
             if !silent {
                 // Streamed stdout, if any.
@@ -376,6 +395,17 @@ fn kernel_info_content() -> Value {
         "banner": "Stratum kernel — executable core for the πρσϕ-Formalism (reflective ρ-calculus). DSL cells define processes; %-directives explore, model-check, and compare them. Try %help.",
         "help_links": [],
     })
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 /// Build the Jupyter `data` map for a [`MimeBundle`], including only the MIME

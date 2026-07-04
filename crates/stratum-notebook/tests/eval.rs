@@ -54,7 +54,7 @@ b!(0)",
     // A directive can consume a name bound in an earlier cell.
     let out = eval("%explore p -> g", &mut ns);
     ok_display(&out);
-    assert!(matches!(ns.get("g"), Some(Obj::Lts(_))));
+    assert!(matches!(ns.get("g"), Some(Obj::Lts { .. })));
 }
 
 // ---------------------------------------------------------------------------
@@ -347,4 +347,125 @@ fn handshake_end_to_end() {
         "AG emits(ack) should not hold: {}",
         b.text_plain
     );
+}
+
+// ---------------------------------------------------------------------------
+// Depth guards: pathologically nested input must produce a clean error, not a
+// stack overflow that aborts the process.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deeply_nested_formula_errors_cleanly() {
+    let mut ns = Namespace::new();
+    eval(HANDSHAKE, &mut ns);
+    eval("%explore _1 -> lts", &mut ns);
+
+    // ~400 nested EF(...) — well past the parser's depth cap.
+    let formula = format!("EF {}emits(ack){}", "(".repeat(400), ")".repeat(400));
+    let out = eval(&format!("%check {formula} on lts"), &mut ns);
+    let err = out
+        .error
+        .expect("deeply-nested formula must error, not crash");
+    assert_eq!(err.ename, "FormulaError");
+    assert!(err.evalue.contains("deep"), "evalue: {}", err.evalue);
+}
+
+#[test]
+fn deeply_nested_dsl_errors_cleanly() {
+    let mut ns = Namespace::new();
+    // ~600 nested parens: rejected by the pre-parse nesting guard before it can
+    // overflow the (un-guarded) toolkit parser.
+    let out = eval(&"(".repeat(600), &mut ns);
+    let err = out.error.expect("deeply-nested DSL must error, not crash");
+    assert_eq!(err.ename, "NestingError");
+
+    // The same guard protects a directive that parses inline DSL.
+    let out = eval(&format!("%step {}", "(".repeat(600)), &mut ns);
+    let err = out.error.expect("deeply-nested inline DSL must error");
+    assert_eq!(err.ename, "NestingError");
+}
+
+#[test]
+fn deeply_nested_type_errors_cleanly() {
+    let mut ns = Namespace::new();
+    eval(HANDSHAKE, &mut ns);
+    // ~600 nested Chan(...) in the typing environment.
+    let ty = format!("req:{}Nil{}", "Chan(".repeat(600), ")".repeat(600));
+    let out = eval(&format!("%typecheck _1 with {ty}"), &mut ns);
+    let err = out.error.expect("deeply-nested type must error, not crash");
+    assert_eq!(err.ename, "NestingError");
+}
+
+// ---------------------------------------------------------------------------
+// Reduced-LTS soundness: EX rejection + verdict caveat.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reduced_lts_rejects_ex_and_caveats_others() {
+    let mut ns = Namespace::new();
+    eval(HANDSHAKE, &mut ns);
+    // A partial-order-reduced LTS.
+    let out = eval("%explore _1 por -> rlts", &mut ns);
+    let b = ok_display(&out);
+    assert!(
+        b.text_plain.contains("caveat"),
+        "reduced explore should carry a caveat: {}",
+        b.text_plain
+    );
+
+    // EX (next-time) is not preserved under reduction — must be rejected.
+    let out = eval("%check EX emits(ack) on rlts", &mut ns);
+    let err = out.error.expect("EX on a reduced LTS must be rejected");
+    assert_eq!(err.ename, "ReductionError");
+    assert!(err.evalue.contains("EX"), "evalue: {}", err.evalue);
+
+    // A non-EX property is allowed but its rendering carries the caveat.
+    let out = eval("%check EF emits(ack) on rlts", &mut ns);
+    let b = ok_display(&out);
+    assert!(b.text_plain.starts_with("Holds"), "plain: {}", b.text_plain);
+    assert!(
+        b.text_plain.contains("caveat"),
+        "reduced verdict must carry a caveat: {}",
+        b.text_plain
+    );
+    assert!(b.text_html.as_ref().unwrap().contains("caveat"));
+
+    // Symmetry reduction behaves the same way for EX.
+    let out = eval("%explore _1 sym=req,ack -> slts", &mut ns);
+    ok_display(&out);
+    let out = eval("%check EX emits(ack) on slts", &mut ns);
+    assert_eq!(
+        out.error.expect("EX on symmetry LTS").ename,
+        "ReductionError"
+    );
+
+    // A full LTS has no caveat and accepts EX.
+    eval("%explore _1 -> flts", &mut ns);
+    let out = eval("%check EX emits(ack) on flts", &mut ns);
+    let b = ok_display(&out);
+    assert!(!b.text_plain.contains("caveat"), "full LTS must not caveat");
+}
+
+// ---------------------------------------------------------------------------
+// Minor fixes: auto-name collision + bisim arity.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn auto_names_skip_user_bindings() {
+    let mut ns = Namespace::new();
+    // User explicitly claims `_1`.
+    eval("_1 = new a\n\na!(0)", &mut ns);
+    // An unnamed cell must NOT clobber it — it should land on `_2`.
+    eval("new b\n\nb!(0)", &mut ns);
+    assert!(matches!(ns.get("_1"), Some(Obj::Proc(_))));
+    assert!(matches!(ns.get("_2"), Some(Obj::Proc(_))));
+}
+
+#[test]
+fn bisim_extra_args_error() {
+    let mut ns = Namespace::new();
+    eval("p = new a\n\na!(0)", &mut ns);
+    let out = eval("%bisim p p p", &mut ns);
+    let err = out.error.expect("extra bisim args must error");
+    assert_eq!(err.ename, "DirectiveError");
 }

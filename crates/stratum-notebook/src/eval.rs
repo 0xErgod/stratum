@@ -18,10 +18,45 @@ use crate::render::{
     render_checked, render_lts, render_proc, render_run, render_typecheck, render_verdict,
     MimeBundle,
 };
-use crate::{collect_names, CellError, CellOutcome, Namespace, Obj};
+use crate::{collect_names, CellError, CellOutcome, Namespace, Obj, Reduction};
 
 /// The default bounded-exploration state cap for directives that build an LTS.
 const DEFAULT_BOUND: usize = 1000;
+
+/// Maximum bracket-nesting depth accepted in any string handed to the toolkit
+/// parsers (`parse_with_aliases`, `expand`, the `Chan(..)` type parser). Those
+/// parsers recurse without a depth guard (issue #43), so a pathologically nested
+/// input would overflow the native stack and abort the whole process —
+/// uncatchable by `catch_unwind`. We reject over-deep input up front with a
+/// clean error. The scan is a conservative over-approximation (it counts every
+/// bracket kind and ignores matching), which is fine: rejecting a pathological
+/// cell is always preferable to crashing.
+const MAX_NESTING_DEPTH: usize = 256;
+
+/// Reject a string whose maximum bracket/paren/brace nesting exceeds
+/// [`MAX_NESTING_DEPTH`], before it reaches a non-depth-guarded toolkit parser.
+fn guard_nesting(src: &str) -> Result<(), CellError> {
+    let mut depth: usize = 0;
+    let mut max: usize = 0;
+    for c in src.chars() {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    if max > MAX_NESTING_DEPTH {
+        Err(CellError::new(
+            "NestingError",
+            format!("input nesting too deep (max {MAX_NESTING_DEPTH})"),
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 /// Evaluate one notebook cell against the session namespace.
 #[must_use]
@@ -72,6 +107,7 @@ fn run_magic(cell: &str) -> Result<Vec<MimeBundle>, CellError> {
 
 fn run_dsl(cell: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let (binding, source) = split_binding(cell);
+    guard_nesting(source)?;
     let (proc, aliases) = parse_with_aliases(source).map_err(|e| parse_error(source, &e))?;
     ns.absorb_aliases(&proc, aliases);
     let bundle = render_proc(&proc, ns.aliases());
@@ -131,19 +167,22 @@ fn dir_explore(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
     let proc = resolve_proc(target, ns)?;
     let bound = opts.bound.unwrap_or(DEFAULT_BOUND);
 
-    let lts = if opts.por {
+    let (lts, reduction) = if opts.por {
         let observed = resolve_names(&opts.obs, ns)?;
-        Lts::explore_por(&proc, bound, &observed)
+        (Lts::explore_por(&proc, bound, &observed), Reduction::Por)
     } else if !opts.sym.is_empty() {
         let interchangeable = resolve_names(&opts.sym, ns)?;
-        Lts::explore_symmetric(&proc, bound, &interchangeable)
+        (
+            Lts::explore_symmetric(&proc, bound, &interchangeable),
+            Reduction::Symmetry,
+        )
     } else {
-        Lts::explore(&proc, bound)
+        (Lts::explore(&proc, bound), Reduction::None)
     };
 
-    let bundle = render_lts(&lts);
+    let bundle = apply_caveat(render_lts(&lts), reduction);
     if let Some(name) = bind {
-        ns.insert(name, Obj::Lts(lts));
+        ns.insert(name, Obj::Lts { lts, reduction });
     }
     Ok(vec![bundle])
 }
@@ -157,6 +196,7 @@ fn dir_expand(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErr
     let core = if let Some(proc) = ns.get_proc(target) {
         to_source(&canonicalize(proc))
     } else {
+        guard_nesting(target)?;
         expand(target).map_err(|e| parse_error(target, &e))?
     };
     Ok(vec![MimeBundle {
@@ -173,11 +213,12 @@ fn dir_expand(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErr
 fn dir_check(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let (formula_src, lts_name) = split_on(rest, " on ")
         .ok_or_else(|| CellError::new("DirectiveError", "usage: %check <formula> on <ltsname>"))?;
-    let lts = lookup_lts(lts_name.trim(), ns)?;
+    let (lts, reduction) = lookup_lts_binding(lts_name.trim(), ns)?;
     let compiled = compile_formula(formula_src.trim(), ns)?;
+    reject_ex_on_reduced(&compiled, reduction)?;
     let label = compiled.labelling();
     let checked = holds_checked(lts, &compiled.formula, &label);
-    Ok(vec![render_checked(checked)])
+    Ok(vec![apply_caveat(render_checked(checked), reduction)])
 }
 
 /// `%witness <formula> on <ltsname>`
@@ -185,15 +226,15 @@ fn dir_witness(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
     let (formula_src, lts_name) = split_on(rest, " on ").ok_or_else(|| {
         CellError::new("DirectiveError", "usage: %witness <formula> on <ltsname>")
     })?;
-    let lts = lookup_lts(lts_name.trim(), ns)?;
+    let (lts, reduction) = lookup_lts_binding(lts_name.trim(), ns)?;
     let compiled = compile_formula(formula_src.trim(), ns)?;
+    reject_ex_on_reduced(&compiled, reduction)?;
     let label = compiled.labelling();
-    match witness(lts, &compiled.formula, &label) {
-        Some(run) => Ok(vec![render_run("witness", &run, lts)]),
-        None => Ok(vec![MimeBundle::plain(
-            "no witness: the goal is unreachable in the explored LTS",
-        )]),
-    }
+    let bundle = match witness(lts, &compiled.formula, &label) {
+        Some(run) => render_run("witness", &run, lts),
+        None => MimeBundle::plain("no witness: the goal is unreachable in the explored LTS"),
+    };
+    Ok(vec![apply_caveat(bundle, reduction)])
 }
 
 /// `%counterexample <invariant> on <ltsname>`
@@ -204,15 +245,17 @@ fn dir_counterexample(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>,
             "usage: %counterexample <invariant> on <ltsname>",
         )
     })?;
-    let lts = lookup_lts(lts_name.trim(), ns)?;
+    let (lts, reduction) = lookup_lts_binding(lts_name.trim(), ns)?;
     let compiled = compile_formula(formula_src.trim(), ns)?;
+    reject_ex_on_reduced(&compiled, reduction)?;
     let label = compiled.labelling();
-    match counterexample(lts, &compiled.formula, &label) {
-        Some(run) => Ok(vec![render_run("counterexample", &run, lts)]),
-        None => Ok(vec![MimeBundle::plain(
-            "no counterexample: the invariant holds throughout the explored LTS",
-        )]),
-    }
+    let bundle = match counterexample(lts, &compiled.formula, &label) {
+        Some(run) => render_run("counterexample", &run, lts),
+        None => {
+            MimeBundle::plain("no counterexample: the invariant holds throughout the explored LTS")
+        }
+    };
+    Ok(vec![apply_caveat(bundle, reduction)])
 }
 
 /// `%bisim <p> <q> [weak] [obs=a,b] [bound=N]`
@@ -224,6 +267,13 @@ fn dir_bisim(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
     let (Some(pn), Some(qn)) = (p_name, q_name) else {
         return arity_err("bisim", "%bisim <p> <q> [weak] [obs=a,b]");
     };
+    if words.next().is_some() {
+        return Err(CellError::new(
+            "DirectiveError",
+            "`%bisim` takes exactly two processes (extra arguments given). \
+             Usage: %bisim <p> <q> [weak] [obs=a,b]",
+        ));
+    }
     let p = resolve_proc(pn, ns)?;
     let q = resolve_proc(qn, ns)?;
     let bound = opts.bound.unwrap_or(DEFAULT_BOUND);
@@ -338,6 +388,7 @@ fn resolve_proc(target: &str, ns: &mut Namespace) -> Result<Proc, CellError> {
             return Ok(p.clone());
         }
     }
+    guard_nesting(target)?;
     let (proc, aliases) = parse_with_aliases(target).map_err(|e| parse_error(target, &e))?;
     ns.absorb_aliases(&proc, aliases);
     Ok(proc)
@@ -346,8 +397,16 @@ fn resolve_proc(target: &str, ns: &mut Namespace) -> Result<Proc, CellError> {
 /// Look up a bound LTS by name, erroring clearly if it is missing or the wrong
 /// kind.
 fn lookup_lts<'a>(name: &str, ns: &'a Namespace) -> Result<&'a Lts, CellError> {
+    lookup_lts_binding(name, ns).map(|(lts, _)| lts)
+}
+
+/// Look up a bound LTS together with the [`Reduction`] it was explored under.
+fn lookup_lts_binding<'a>(
+    name: &str,
+    ns: &'a Namespace,
+) -> Result<(&'a Lts, Reduction), CellError> {
     match ns.get(name) {
-        Some(Obj::Lts(l)) => Ok(l),
+        Some(Obj::Lts { lts, reduction }) => Ok((lts, *reduction)),
         Some(other) => Err(CellError::new(
             "NameError",
             format!("`{name}` is a {}, not an lts", other.kind()),
@@ -359,6 +418,46 @@ fn lookup_lts<'a>(name: &str, ns: &'a Namespace) -> Result<&'a Lts, CellError> {
             ),
         )),
     }
+}
+
+/// Reject an `EX` (next-time) formula against a reduced LTS: partial-order and
+/// symmetry reduction do not preserve next-time, so such a verdict would be
+/// silently wrong.
+fn reject_ex_on_reduced(
+    compiled: &crate::formula::CompiledFormula,
+    reduction: Reduction,
+) -> Result<(), CellError> {
+    if compiled.uses_ex && reduction != Reduction::None {
+        Err(CellError::new(
+            "ReductionError",
+            format!(
+                "this LTS is {} — the `EX` (next-time) modality is not preserved \
+                 under reduction, so the verdict would be unsound. Re-explore with \
+                 plain `%explore` (no `por` / `sym=`) to check next-time properties.",
+                reduction.label()
+            ),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Attach a reduction caveat to a rendered bundle (a no-op for a full LTS), so a
+/// verdict against a reduced LTS is never presented without its soundness
+/// qualification.
+fn apply_caveat(mut bundle: MimeBundle, reduction: Reduction) -> MimeBundle {
+    if let Some(caveat) = reduction.caveat() {
+        bundle.text_plain = format!("{}\n[caveat] {caveat}", bundle.text_plain);
+        let extra = format!(
+            "<div class=\"stratum-caveat\" style=\"color:#f9a825\"><small>caveat: {}</small></div>",
+            crate::render::escape_html(caveat)
+        );
+        bundle.text_html = Some(match bundle.text_html {
+            Some(html) => format!("{html}{extra}"),
+            None => extra,
+        });
+    }
+    bundle
 }
 
 /// Compile a formula against the namespace's name table, mapping a formula error
@@ -412,6 +511,8 @@ fn default_observations(p: &Proc, q: &Proc) -> Vec<Name> {
 /// Parse a minimal typing environment: `a:Ty, b:Ty, ...` where `Ty` is `Nil`,
 /// `Proc`, or `Chan(Ty)`. Channel names resolve via the namespace.
 fn parse_env(src: &str, ns: &Namespace) -> Result<Env, CellError> {
+    // `parse_ty` recurses on `Chan(..)`; bound its depth up front.
+    guard_nesting(src)?;
     let mut env = Env::new();
     for entry in src.split(',') {
         let entry = entry.trim();
@@ -580,7 +681,12 @@ Stratum notebook directives:
 
 Formula fragment: EF/AG/AF/EG/EX φ, φ & ψ, φ | ψ, !φ, ( ), and the atomic
 proposition emits(<name>) — a top-level OUTPUT barb on the named channel.
-Types: Nil, Proc, Chan(<Ty>).";
+Types: Nil, Proc, Chan(<Ty>).
+
+Reduced LTSs (`%explore ... por` / `sym=...`) preserve only a fragment of
+the logic: `%check`/`%witness`/`%counterexample` REJECT the `EX` (next-time)
+modality on them, and other verdicts carry a caveat. Use plain `%explore`
+(no por/sym) to check next-time properties.";
     let html = format!(
         "<pre class=\"stratum-help\">{}</pre>",
         crate::render::escape_html(plain)
