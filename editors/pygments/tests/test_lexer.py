@@ -59,16 +59,17 @@ def test_category_mapping():
     def has(token_type, value):
         return any(t is token_type and v == value for t, v in toks)
 
-    # Declaration keywords.
+    # Declaration keywords — only `def` and `new` (macros are `def NAME(...)`).
     assert has(Keyword.Declaration, "def")
     assert has(Keyword.Declaration, "new")
-    assert has(Keyword.Declaration, "macro")
+    # `macro` is NOT a Stratum keyword: it must never lex as a declaration keyword.
+    assert not has(Keyword.Declaration, "macro")
     # Null process.
     assert has(Keyword.Constant, "nil")
     assert has(Keyword.Constant, "0")
-    # `def`/`macro` binder names and macro-call names -> function.
+    # `def` binder names and macro-call names -> function.
     assert has(Name.Function, "relay")  # both the def and the call
-    assert has(Name.Function, "echo")
+    assert has(Name.Function, "echo")  # the def binder name
     # Operators: quote, drop, lift, par, named-arg arrow.
     for op in ("@", "*", "!", "|", "<-"):
         assert has(Operator, op), op

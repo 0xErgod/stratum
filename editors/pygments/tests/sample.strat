@@ -4,7 +4,7 @@ def relay(c, d) {
   c(x).d!(*x)
 }
 
-macro echo(c) { c(x).c!(*x) }
+def echo(c) { c(x).c!(*x) }
 
 new a, b
 relay(a <- @0, b)

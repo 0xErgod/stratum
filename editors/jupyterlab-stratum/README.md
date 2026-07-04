@@ -27,7 +27,7 @@ are not scope-resolved.
 
 | tree-sitter capture         | surface              | CM6 tag (`@lezer/highlight`)      |
 | --------------------------- | -------------------- | --------------------------------- |
-| `@keyword`                  | `def` `new` `macro`  | `tags.keyword`                    |
+| `@keyword`                  | `def` `new`          | `tags.keyword`                    |
 | `@constant.builtin` `(nil)` | `nil` / `0`          | `tags.atom`                       |
 | `@function[.call]`          | `def NAME` / `f(...)`| `tags.function(tags.variableName)`|
 | `@variable[.parameter]`     | identifiers          | `tags.variableName`               |

@@ -5,7 +5,8 @@ higher-order ρ-calculus surface syntax (`.strat`).
 
 It mirrors the highlight categories of the authoritative tree-sitter queries in
 `crates/stratum-syntax/tree-sitter/queries/highlights.scm` (keywords
-`def`/`new`/`macro`, the null process `nil`/`0`, the quote `@` / drop `*` /
+`def`/`new` — macros are written `def NAME(...)`, there is no `macro` keyword —
+the null process `nil`/`0`, the quote `@` / drop `*` /
 lift `!` / par `|` / named-arg `<-` operators, macro-call names, comments,
 numbers). Being regex-based it cannot reproduce the parser's structural
 disambiguations (e.g. input `x(y).P` vs. macro call `f(args)`); see the module

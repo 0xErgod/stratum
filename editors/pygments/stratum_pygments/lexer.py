@@ -6,9 +6,9 @@ The token categories mirror the authoritative tree-sitter highlight queries in
 ======================================  ==========================  ==================
 Tree-sitter capture                     Surface construct           Pygments token
 ======================================  ==========================  ==================
-``@keyword``                            ``def`` / ``new`` / ``macro``  ``Keyword.Declaration``
+``@keyword``                            ``def`` / ``new``           ``Keyword.Declaration``
 ``@constant.builtin`` ``(nil)``         ``nil`` / ``0``             ``Keyword.Constant``
-``@function`` ``(def name:)``           ``def NAME`` / ``macro NAME``  ``Name.Function``
+``@function`` ``(def name:)``           ``def NAME``                ``Name.Function``
 ``@function.call`` ``(call macro:)``    ``NAME(...)``               ``Name.Function``
 ``@variable.parameter`` (named arg)     ``param <-``                ``Name.Variable``
 ``@variable``                           bound / free identifiers    ``Name.Variable``
@@ -57,9 +57,10 @@ class StratumLexer(RegexLexer):
             (r"\s+", Whitespace),
             # Line comments.
             (r"//[^\n]*", Comment.Single),
-            # `def NAME` / `macro NAME` — a declaration keyword binding a name.
+            # `def NAME` — the declaration keyword binding a name (a `def NAME(...)`
+            # macro or a `def NAME { ... }` alias; the NAME is the definition site).
             (
-                r"\b(def|macro)\b(\s+)([A-Za-z_][A-Za-z0-9_]*)",
+                r"\b(def)\b(\s+)([A-Za-z_][A-Za-z0-9_]*)",
                 bygroups(Keyword.Declaration, Whitespace, Name.Function),
             ),
             # `new` — mint fresh names (its names are ordinary identifiers below).

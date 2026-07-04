@@ -21,7 +21,7 @@
 //
 //   tree-sitter capture            surface                CM6 tag (@lezer/highlight)
 //   -----------------------------  ---------------------  --------------------------
-//   @keyword                       def / new / macro      tags.keyword
+//   @keyword                       def / new              tags.keyword
 //   @constant.builtin (nil)        nil / 0                tags.atom
 //   @function / @function.call     def NAME / NAME(...)   tags.function(tags.variableName)
 //   @variable(.parameter)          identifiers            tags.variableName
@@ -34,13 +34,13 @@
 import { LanguageSupport, StreamLanguage, StreamParser } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 
-/** Per-line tokenizer state: were we just after a `def`/`macro` keyword? */
+/** Per-line tokenizer state: were we just after a `def` keyword? */
 interface StratumState {
-  /** True immediately after a `def`/`macro` keyword, until its name is read. */
+  /** True immediately after a `def` keyword, until its name is read. */
   expectName: boolean;
 }
 
-const KEYWORDS = new Set(['def', 'new', 'macro']);
+const KEYWORDS = new Set(['def', 'new']);
 
 const parser: StreamParser<StratumState> = {
   name: 'stratum',
@@ -101,14 +101,14 @@ const parser: StreamParser<StratumState> = {
       const word = stream.current();
 
       if (KEYWORDS.has(word)) {
-        // `def`/`macro` bind a name next; `new`'s names stay ordinary variables.
-        state.expectName = word === 'def' || word === 'macro';
+        // `def` binds a name next; `new`'s names stay ordinary variables.
+        state.expectName = word === 'def';
         return 'keyword';
       }
       if (word === 'nil') {
         return 'atom';
       }
-      // The name bound by a preceding `def`/`macro`.
+      // The name bound by a preceding `def` (a macro or alias definition site).
       if (wasExpectingName) {
         return 'function';
       }
