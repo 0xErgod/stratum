@@ -16,21 +16,34 @@ cargo build --release --manifest-path "$repo_root/Cargo.toml" -p stratum-kernel
 
 bin="$repo_root/target/release/stratum-kernel"
 [[ "${OS:-}" == "Windows_NT" ]] && bin="$bin.exe"
-if [[ ! -x "$bin" && ! -f "$bin" ]]; then
+if [[ ! -f "$bin" ]]; then
   echo "!! built binary not found at $bin" >&2
   exit 1
+fi
+
+# argv[0] must be a path the Jupyter launcher can exec. On Windows that launcher
+# is native Python, which cannot run an MSYS/Cygwin `/z/...` path — convert to a
+# forward-slash Windows path (e.g. Z:/…/stratum-kernel.exe) with `cygpath -m`,
+# valid both in JSON and for the launcher.
+argv0="$bin"
+if [[ "${OS:-}" == "Windows_NT" ]] && command -v cygpath >/dev/null 2>&1; then
+  argv0="$(cygpath -m "$bin")"
 fi
 
 staging="$(mktemp -d)/stratum"
 mkdir -p "$staging"
 
-# Rewrite argv[0] in the kernelspec to the absolute binary path.
-python3 - "$here/kernel.json" "$bin" "$staging/kernel.json" <<'PY'
+# Rewrite argv[0] in the committed kernelspec (kernelspec/kernel.json) to the
+# absolute binary path. Read/write as UTF-8 so a non-ASCII description does not
+# trip Windows' default cp1252 codec.
+python3 - "$here/kernelspec/kernel.json" "$argv0" "$staging/kernel.json" <<'PY'
 import json, sys
 src, binpath, dst = sys.argv[1:4]
-spec = json.load(open(src))
+with open(src, encoding="utf-8") as f:
+    spec = json.load(f)
 spec["argv"][0] = binpath
-json.dump(spec, open(dst, "w"), indent=2)
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(spec, f, indent=2)
 print(">> kernelspec argv[0] ->", binpath)
 PY
 
@@ -38,4 +51,4 @@ scope="${1:---user}"
 echo ">> jupyter kernelspec install $scope --name stratum"
 jupyter kernelspec install "$scope" --replace --name stratum "$staging"
 
-echo ">> done. Open JupyterLab and pick the 'Stratum' kernel."
+echo ">> done. Open JupyterLab or a VS Code notebook and pick the 'Stratum' kernel."
