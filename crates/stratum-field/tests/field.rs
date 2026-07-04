@@ -1,5 +1,5 @@
-//! Tests for the field grain: partition lattice laws, projections, and
-//! measurability.
+//! Tests for the information-field layer: partition lattice laws, projections,
+//! and measurability.
 
 use stratum_core::term::{input, lift, par, quote, zero};
 use stratum_core::Name;

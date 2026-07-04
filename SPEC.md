@@ -2,24 +2,25 @@
 
 This document records the modelling decisions where the source theory is
 informal or admits choices, so that "faithful to the source" is a checkable
-contract rather than a matter of taste. Sections are added as grains are built.
+contract rather than a matter of taste. Sections are added as components are
+built.
 
-The process grain follows Meredith & Radestock, *A Reflective Higher-order
-Calculus* (ENTCS 141(5), 2005); the field grain follows the PI-SIGFPT
-informational-fields substrate (Witsenhausen intrinsic model / σ-algebras).
+The process layer follows Meredith & Radestock, *A Reflective Higher-order
+Calculus* (ENTCS 141(5), 2005); the information-field layer follows the
+Witsenhausen intrinsic model / σ-algebra approach.
 
 ---
 
-## F. Field grain (σ) — agents, projections, information fields
+## F. Information fields (σ-algebras) — agents, projections, information fields
 
-The field grain answers "what does an agent know?" as a σ-algebra over a
+The information-field layer answers "what does an agent know?" as a σ-algebra over a
 configuration space. On the bounded LTS the space is finite, and a finite
 σ-algebra is exactly a **partition**; its blocks are the field's **atoms** (its
 resolution limit).
 
 **F1. Configuration space `H`.** `H` = the reachable states of the trace LTS
 (`stratum_lts::Lts`). A state is a canonical process — "the trace flattened".
-As with every other grain, `H` is the *bounded* reachable fragment; truncation is
+As everywhere else in Stratum, `H` is the *bounded* reachable fragment; truncation is
 reported by the LTS and inherited here.
 
 **F2. Aspects = channels.** The world is a product `H ⊆ ∏_c content(c)` indexed by
@@ -28,7 +29,7 @@ stable coordinate structure is *per channel*, not per sub-term.
 
 **F3. Coordinate content = presence or payload.** `content(c)` defaults to
 **presence**: whether the state has a top-level output (barb) on a channel `≡N c`.
-This coincides exactly with the §4 barb semantics, so the field grain composes
+This coincides exactly with the §4 barb semantics, so the information field composes
 with `stratum-equiv`. *Done:* the API is parameterized (`content::observational_field_by`)
 so `content(c)` may instead be the **payload multiset** — the canonical lifted
 processes pending on `c`, via `content::project_payload` / `content::payload_field`

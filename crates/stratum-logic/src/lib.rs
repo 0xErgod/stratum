@@ -1,6 +1,6 @@
 //! # stratum-logic
 //!
-//! The **temporal-logic grain** (ϕ) of the πρσϕ-Formalism: a modal μ-calculus
+//! The **temporal-logic layer**: a modal μ-calculus
 //! model checker over the ρ-calculus trace LTS ([`stratum_lts`]).
 //!
 //! The μ-calculus is chosen for *full temporal expressiveness* — it subsumes

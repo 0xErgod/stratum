@@ -3,42 +3,40 @@
 [![CI](https://github.com/0xErgod/stratum/actions/workflows/ci.yml/badge.svg)](https://github.com/0xErgod/stratum/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-An executable core for the **πρσϕ-Formalism** — the computational movement of
-the PI-SIGFPT protocol-theory research arc. Stratum is the tool that makes the
-formalism *speakable*: a workbench for modelling protocols, running them to
-produce traces, and verifying temporal properties over those traces.
+A playground for experimenting with the **reflective ρ-calculus** as a language
+for protocol design and analysis. Stratum is a workbench for modelling protocols,
+running them to produce traces, and checking temporal, epistemic, and equivalence
+properties over those traces — with a Coq-verified core and a Jupyter kernel
+front end.
 
 The name is from the working definition of a protocol as *a stratum of codified
 behaviour* (Rao et al.).
 
 ## Foundation
 
-Stratum's process grain is the **reflective higher-order (ρ) calculus** of
+Stratum's process layer is the **reflective higher-order (ρ) calculus** of
 Meredith & Radestock, *A Reflective Higher-order Calculus* (ENTCS 141(5), 2005).
 It was chosen because it is a *closed* theory of processes: names are quoted
 processes, so the theory of names arises wholly from the theory of processes —
 unlike the π-calculus, which is parametric in an external theory of names. That
 closure is what makes the whole pipeline self-contained.
 
-> Naming note: in the πρσϕ scheme, **ρ** denotes the *trace* grain. Stratum uses
-> Meredith's ρ-*calculus* as the *process* grain (π). The two ρ's are distinct.
+## Components
 
-## The four grains
+Stratum is a pipeline: write a protocol, reduce it to a trace, and check
+properties of that trace. Each stage is its own crate:
 
-The πρσϕ-Formalism sees one object — the **trace** — at four grains. Stratum
-grows one crate per grain:
-
-| Grain | Faculty        | Role                        | Crate                    | Status |
-|-------|----------------|-----------------------------|--------------------------|--------|
-| π     | process theory | *generates* the trace       | `stratum-core`           | M1–M2 ✅ |
-| ρ     | trace theory   | what a run *is*             | `stratum-lts`            | M3 ✅  |
-| σ     | field theory   | *partitions* the trace      | `stratum-field`          | M6 ✅ (static + filtration + payload) |
-| ϕ     | temporal logic | *scores* the trace          | `stratum-logic`          | M4 ✅  |
+| Role                                              | Crate                    | Status |
+|---------------------------------------------------|--------------------------|--------|
+| process calculus that *generates* the trace       | `stratum-core`           | M1–M2 ✅ |
+| the labelled transition system a run *is*         | `stratum-lts`            | M3 ✅  |
+| information fields that *partition* the trace      | `stratum-field`          | M6 ✅ (static + filtration + payload) |
+| temporal / epistemic model checker over the trace | `stratum-logic`          | M4 ✅  |
 
 Behavioral equivalence of two systems lives in `stratum-equiv` (N-barbed
-bisimulation, §4) — built on the LTS rather than being one of the four grains.
+bisimulation, §4), built directly on the LTS.
 
-The σ and ϕ grains compose: `stratum-logic` has epistemic operators `K_A`
+Fields and temporal logic compose: `stratum-logic` has epistemic operators `K_A`
 (knows) and `P_A` (possible) over an agent's information field, so knowledge and
 temporal/branching properties can be checked together.
 

@@ -1,6 +1,6 @@
 //! # stratum-core
 //!
-//! The **process grain** of the πρσϕ-Formalism: an implementation of the
+//! The **process layer**: an implementation of the
 //! reflective higher-order (ρ) calculus of Meredith & Radestock,
 //! *A Reflective Higher-order Calculus* (ENTCS 141(5), 2005).
 //!

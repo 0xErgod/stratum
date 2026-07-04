@@ -1,8 +1,8 @@
 //! # stratum-field
 //!
-//! The **field grain** (σ) of the πρσϕ-Formalism: information fields over the
-//! ρ-calculus configuration space, following the PI-SIGFPT informational-fields
-//! substrate. See `SPEC.md` §F for the modelling decisions.
+//! **Information fields** (finite σ-algebras) over the ρ-calculus trace
+//! configuration space, following the Witsenhausen intrinsic model / σ-algebra
+//! approach. See `SPEC.md` §F for the modelling decisions.
 //!
 //! On the bounded trace LTS the configuration space is finite, so a finite
 //! σ-algebra is exactly a **partition** ([`Field`]); its blocks are the field's
