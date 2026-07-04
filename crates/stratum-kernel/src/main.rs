@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 use zeromq::{PubSocket, RepSocket, RouterSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
-use stratum_notebook::{CellError, CellOutcome, MimeBundle, Namespace};
+use stratum_notebook::{CellError, CellOutcome, IsComplete, MimeBundle, Namespace};
 use wire::{ConnectionInfo, Header, Message, Outgoing, PROTOCOL_VERSION};
 
 /// Shared handle to the single PUB socket used for all iopub broadcasts.
@@ -323,9 +323,119 @@ async fn handle_shell(
 
             Ok(Some(frames))
         }
-        // Unknown request types are ignored in Phase 0.
+        "complete_request" => {
+            let code = str_field(msg, "code");
+            let cursor_pos = usize_field(msg, "cursor_pos");
+            publish_status(iopub, key, &session, msg, "busy").await?;
+
+            // Panic-safe: the notebook service is panic-free by design, but we
+            // contain any ordinary panic so an interactivity request can never
+            // tear down the shell loop.
+            let comp = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                stratum_notebook::complete(&code, cursor_pos, namespace)
+            }))
+            .unwrap_or_default();
+            let content = json!({
+                "status": "ok",
+                "matches": comp.matches,
+                "cursor_start": comp.cursor_start,
+                "cursor_end": comp.cursor_end,
+                "metadata": {},
+            });
+            let frames = reply_to(msg, "complete_reply", &session, content).into_frames(key);
+            publish_status(iopub, key, &session, msg, "idle").await?;
+            Ok(Some(frames))
+        }
+        "inspect_request" => {
+            let code = str_field(msg, "code");
+            let cursor_pos = usize_field(msg, "cursor_pos");
+            publish_status(iopub, key, &session, msg, "busy").await?;
+
+            let inspection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                stratum_notebook::inspect(&code, cursor_pos, namespace)
+            }))
+            .unwrap_or(None);
+            let (found, data) = match inspection {
+                Some(i) => {
+                    let mut d = serde_json::Map::new();
+                    d.insert("text/plain".to_string(), Value::String(i.text_plain));
+                    if let Some(html) = i.text_html {
+                        d.insert("text/html".to_string(), Value::String(html));
+                    }
+                    (true, Value::Object(d))
+                }
+                None => (false, json!({})),
+            };
+            let content = json!({
+                "status": "ok",
+                "found": found,
+                "data": data,
+                "metadata": {},
+            });
+            let frames = reply_to(msg, "inspect_reply", &session, content).into_frames(key);
+            publish_status(iopub, key, &session, msg, "idle").await?;
+            Ok(Some(frames))
+        }
+        "is_complete_request" => {
+            let code = str_field(msg, "code");
+            publish_status(iopub, key, &session, msg, "busy").await?;
+
+            let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                stratum_notebook::is_complete(&code)
+            }));
+            let (status, indent) = match verdict {
+                Ok(IsComplete::Complete) => ("complete", String::new()),
+                Ok(IsComplete::Incomplete { indent }) => ("incomplete", indent),
+                Ok(IsComplete::Invalid) => ("invalid", String::new()),
+                // A panic in the classifier: report "unknown" so the frontend
+                // falls back to a heuristic rather than hanging.
+                Err(_) => ("unknown", String::new()),
+            };
+            let content = json!({ "status": status, "indent": indent });
+            let frames = reply_to(msg, "is_complete_reply", &session, content).into_frames(key);
+            publish_status(iopub, key, &session, msg, "idle").await?;
+            Ok(Some(frames))
+        }
+        // Unknown request types are ignored.
         _ => Ok(None),
     }
+}
+
+/// A string field of a request's content, or `""` when absent.
+fn str_field(msg: &Message, field: &str) -> String {
+    msg.content
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// A `usize` field of a request's content, or `0` when absent / negative.
+fn usize_field(msg: &Message, field: &str) -> usize {
+    msg.content
+        .get(field)
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+/// Publish an iopub `status` broadcast parented to `req` (busy/idle bracketing).
+async fn publish_status(
+    iopub: &IoPub,
+    key: &[u8],
+    session: &str,
+    req: &Message,
+    state: &str,
+) -> anyhow::Result<()> {
+    publish(
+        iopub,
+        key,
+        "status",
+        session,
+        req.header.clone(),
+        json!({ "execution_state": state }),
+    )
+    .await
 }
 
 /// The control loop: shutdown and interrupt requests.
