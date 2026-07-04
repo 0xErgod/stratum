@@ -52,12 +52,35 @@ pub(crate) struct Program {
     pub(crate) program: Block,
 }
 
-/// The parser state: the token stream, a cursor, and the set of macro names
-/// (declarations with a parameter list) used to disambiguate applications.
+/// The maximum recursion depth of the descent before the parser bails out with
+/// a clean [`ParseError`] instead of overflowing the process stack.
+///
+/// The hand-written recursive-descent parser recurses once (or twice) per level
+/// of source nesting — nested groups `((…))`, nested quotes `@(…)`, drops `*x`,
+/// input/lift bodies, and parallel terms. On adversarial input (e.g. hundreds of
+/// nested parentheses) an unbounded descent hits the platform stack limit and
+/// aborts the process with an *uncatchable* `STATUS_STACK_OVERFLOW` (SIGSEGV on
+/// Unix). Empirically the crash begins around 600–800 nested parens; a cap of
+/// 256 sits comfortably below that (roughly a third of the observed limit, i.e.
+/// ample stack headroom) yet astronomically above any real program — a genuine
+/// protocol nests only a handful of levels deep — so no reasonable input is ever
+/// rejected. The counter tracks descent-function entries, so a single level of
+/// source nesting advances it by one or two; the cap is generous under either
+/// accounting.
+const MAX_DEPTH: usize = 256;
+
+/// The parser state: the token stream, a cursor, the set of macro names
+/// (declarations with a parameter list) used to disambiguate applications, and
+/// the current recursion depth of the descent (see [`MAX_DEPTH`]).
 pub(crate) struct Parser {
     toks: Vec<Token>,
     pos: usize,
     macros: std::collections::HashSet<String>,
+    /// The current nesting depth of the recursive descent. Incremented on entry
+    /// to each recursive parse function and decremented on exit; when it would
+    /// exceed [`MAX_DEPTH`] the parser returns a "nesting too deep" error rather
+    /// than recursing further and risking a stack overflow.
+    depth: usize,
 }
 
 /// First pass: collect the names of all macros (a `def` with a `(`).
@@ -93,7 +116,35 @@ impl Parser {
             toks,
             pos: 0,
             macros,
+            depth: 0,
         }
+    }
+
+    // --- recursion-depth guard ---------------------------------------------
+
+    /// Enter one level of recursive descent, failing with a clean
+    /// [`ParseError`] (anchored at the current token) if the nesting would
+    /// exceed [`MAX_DEPTH`]. Every recursive parse function calls this on entry
+    /// and pairs it with [`Parser::exit`] on the way out, so a normal (finite,
+    /// shallow) program never trips it while an adversarially deep one is
+    /// rejected before it can overflow the stack.
+    fn enter(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            Err(self.err_here(format!(
+                "input nested too deeply (exceeded the maximum nesting depth of \
+                 {MAX_DEPTH}); simplify or split the program"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Leave one level of recursive descent (the counterpart to
+    /// [`Parser::enter`]). Called on the success path so that sibling recursion
+    /// (parallel terms, argument lists) does not accumulate depth.
+    fn exit(&mut self) {
+        self.depth -= 1;
     }
 
     // --- cursor helpers ----------------------------------------------------
@@ -273,7 +324,20 @@ impl Parser {
     // --- processes ---------------------------------------------------------
 
     /// `process ::= term ( '|' term )*` — parallel composition, lowest precedence.
+    ///
+    /// A depth-guarded wrapper around [`Parser::parse_process_inner`]: it counts
+    /// this level of the descent so pathologically nested input is rejected with
+    /// a clean error instead of overflowing the stack.
     fn parse_process(&mut self) -> Result<S, ParseError> {
+        self.enter()?;
+        let r = self.parse_process_inner();
+        self.exit();
+        r
+    }
+
+    /// The body of [`Parser::parse_process`] (see it for the grammar); call that
+    /// wrapper, not this, so the recursion-depth guard is applied.
+    fn parse_process_inner(&mut self) -> Result<S, ParseError> {
         let mut items = vec![self.parse_term()?];
         while matches!(self.peek(), Tok::Bar) {
             self.bump();
@@ -287,7 +351,18 @@ impl Parser {
     }
 
     /// A single prefix-level term (binds tighter than `|`).
+    ///
+    /// A depth-guarded wrapper around [`Parser::parse_term_inner`].
     fn parse_term(&mut self) -> Result<S, ParseError> {
+        self.enter()?;
+        let r = self.parse_term_inner();
+        self.exit();
+        r
+    }
+
+    /// The body of [`Parser::parse_term`]; call the wrapper so the depth guard
+    /// is applied.
+    fn parse_term_inner(&mut self) -> Result<S, ParseError> {
         match self.peek() {
             Tok::Zero => {
                 self.bump();
@@ -444,7 +519,19 @@ impl Parser {
     // --- names -------------------------------------------------------------
 
     /// `name ::= '@' primary | ident`.
+    ///
+    /// A depth-guarded wrapper around [`Parser::parse_name_inner`]; names can
+    /// nest arbitrarily (`@*@*…`, `@(…)`), so this level is counted too.
     fn parse_name(&mut self) -> Result<S, ParseError> {
+        self.enter()?;
+        let r = self.parse_name_inner();
+        self.exit();
+        r
+    }
+
+    /// The body of [`Parser::parse_name`]; call the wrapper so the depth guard
+    /// is applied.
+    fn parse_name_inner(&mut self) -> Result<S, ParseError> {
         match self.peek() {
             Tok::At => {
                 let pos = self.cur_pos();
@@ -467,7 +554,18 @@ impl Parser {
 
     /// `primary ::= '0' | '*' name | '(' process ')'` — the tight process that
     /// may follow `@` without grouping.
+    ///
+    /// A depth-guarded wrapper around [`Parser::parse_primary_inner`].
     fn parse_primary(&mut self) -> Result<S, ParseError> {
+        self.enter()?;
+        let r = self.parse_primary_inner();
+        self.exit();
+        r
+    }
+
+    /// The body of [`Parser::parse_primary`]; call the wrapper so the depth
+    /// guard is applied.
+    fn parse_primary_inner(&mut self) -> Result<S, ParseError> {
         match self.peek() {
             Tok::Zero => {
                 self.bump();

@@ -189,3 +189,77 @@ fn all_examples_are_closed() {
         assert!(p.is_closed(), "`{src}` is not closed");
     }
 }
+
+// --- recursion-depth guard (issue #43) ---------------------------------------
+//
+// The recursive-descent parser must never overflow the process stack on
+// deeply-nested input: a stack overflow is an *uncatchable* abort
+// (`STATUS_STACK_OVERFLOW` / SIGSEGV) that would tear down the whole process
+// (and, here, the test binary). Each test below feeds nesting far beyond any
+// sane program and asserts a clean `Err(ParseError)` comes back. The proof that
+// no overflow occurred is simply that the test binary survives to make the
+// assertion — had the parser recursed unboundedly, the process would have
+// aborted instead of returning.
+
+/// Deeply-nested parenthesized groups return a clean error, not a crash.
+#[test]
+fn deeply_nested_parens_error_not_crash() {
+    let src = format!("{}0{}", "(".repeat(5000), ")".repeat(5000));
+    let err = parse(&src).expect_err("deeply-nested parens must be rejected, not overflow");
+    assert!(
+        err.message.contains("nested too deeply"),
+        "expected a nesting-depth error, got: {err}",
+    );
+}
+
+/// Deeply-nested quotes `@(@(@(…)))` return a clean error, not a crash.
+#[test]
+fn deeply_nested_quotes_error_not_crash() {
+    // `@(*@(*@(… *@0 …)))`: each `@( *` layer nests a quote around a drop of the
+    // next quote, driving the name/primary recursion arbitrarily deep.
+    let n = 5000;
+    let src = format!("*{}@0{}", "@(*".repeat(n), ")".repeat(n));
+    let err = parse(&src).expect_err("deeply-nested quotes must be rejected, not overflow");
+    assert!(
+        err.message.contains("nested too deeply"),
+        "expected a nesting-depth error, got: {err}",
+    );
+}
+
+/// Deeply-nested lift bodies `x!(x!(… ))` return a clean error, not a crash.
+#[test]
+fn deeply_nested_lifts_error_not_crash() {
+    let n = 5000;
+    let src = format!("{}0{}", "@0!(".repeat(n), ")".repeat(n));
+    let err = parse(&src).expect_err("deeply-nested lifts must be rejected, not overflow");
+    assert!(
+        err.message.contains("nested too deeply"),
+        "expected a nesting-depth error, got: {err}",
+    );
+}
+
+/// The depth error carries a meaningful (non-zero) source position.
+#[test]
+fn depth_error_has_position() {
+    let src = format!("{}0{}", "(".repeat(5000), ")".repeat(5000));
+    let err = parse(&src).unwrap_err();
+    assert!(
+        err.line >= 1 && err.column >= 1,
+        "position should be set: {err}"
+    );
+}
+
+/// A moderately-nested program (well within the cap) still parses fine: the
+/// guard must not reject any reasonable input.
+#[test]
+fn moderate_nesting_still_parses() {
+    // 20 levels of grouping around a lift — far deeper than any real protocol,
+    // yet comfortably under the depth cap.
+    let src = format!("{}@0!(0){}", "(".repeat(20), ")".repeat(20));
+    let p = parse(&src).unwrap_or_else(|e| panic!("20-deep nesting should parse: {e}"));
+    assert!(p.is_closed());
+
+    // A 20-deep nest of quotes (as a drop, a valid process) likewise parses.
+    let src = format!("*{}@0{}", "@(*".repeat(20), ")".repeat(20));
+    parse(&src).unwrap_or_else(|e| panic!("20-deep quotes should parse: {e}"));
+}
