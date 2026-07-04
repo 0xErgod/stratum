@@ -90,7 +90,10 @@ pub(crate) fn escape_latex_text(s: &str) -> String {
 
 /// A `text/latex` payload for a short status line: the text boxed in math mode.
 fn latex_status(plain: &str) -> Option<String> {
-    Some(display_math(&format!(r"\text{{{}}}", escape_latex_text(plain))))
+    Some(display_math(&format!(
+        r"\text{{{}}}",
+        escape_latex_text(plain)
+    )))
 }
 
 /// Fold a channel [`Name`] to its source alias for the ASCII LTS listing,
@@ -145,7 +148,10 @@ pub fn render_lts(lts: &Lts, aliases: &Aliases, repr: Repr) -> MimeBundle {
         truncated,
     );
     for i in 0..lts.num_states() {
-        plain.push_str(&format!("  s{i}  {}\n", to_source_folded(lts.state(i), aliases)));
+        plain.push_str(&format!(
+            "  s{i}  {}\n",
+            to_source_folded(lts.state(i), aliases)
+        ));
     }
     for from in 0..lts.num_states() {
         for t in lts.transitions(from) {
@@ -163,7 +169,10 @@ pub fn render_lts(lts: &Lts, aliases: &Aliases, repr: Repr) -> MimeBundle {
             let state_rows: Vec<String> = (0..lts.num_states())
                 .map(|i| format!(r"s_{{{i}}} & {}", to_latex_folded(lts.state(i), aliases)))
                 .collect();
-            let states = format!(r"\begin{{array}}{{rl}}{}\end{{array}}", state_rows.join(r" \\ "));
+            let states = format!(
+                r"\begin{{array}}{{rl}}{}\end{{array}}",
+                state_rows.join(r" \\ ")
+            );
             let mut edges: Vec<String> = Vec::new();
             for from in 0..lts.num_states() {
                 for t in lts.transitions(from) {
@@ -178,13 +187,19 @@ pub fn render_lts(lts: &Lts, aliases: &Aliases, repr: Repr) -> MimeBundle {
             let body = if edges.is_empty() {
                 states
             } else {
-                format!(r"\begin{{array}}{{l}}{states} \\ {}\end{{array}}", edges.join(r" \quad "))
+                format!(
+                    r"\begin{{array}}{{l}}{states} \\ {}\end{{array}}",
+                    edges.join(r" \quad ")
+                )
             };
             Some(display_math(&body))
         }
     };
 
-    MimeBundle { text_plain: plain, text_latex }
+    MimeBundle {
+        text_plain: plain,
+        text_latex,
+    }
 }
 
 /// Render an equivalence [`Verdict`].
@@ -206,7 +221,10 @@ pub fn render_verdict(v: &Verdict, repr: Repr) -> MimeBundle {
             Verdict::Inconclusive(_) => latex_status(&plain),
         },
     };
-    MimeBundle { text_plain: plain, text_latex }
+    MimeBundle {
+        text_plain: plain,
+        text_latex,
+    }
 }
 
 /// Render a model-checking [`Checked`] result (holds + whether the LTS was fully
@@ -230,7 +248,10 @@ pub fn render_checked(c: Checked, repr: Repr) -> MimeBundle {
             )))
         }
     };
-    MimeBundle { text_plain: plain, text_latex }
+    MimeBundle {
+        text_plain: plain,
+        text_latex,
+    }
 }
 
 /// Render a typecheck outcome: `Ok` or the first [`TypeError`].
@@ -244,7 +265,10 @@ pub fn render_typecheck(result: &Result<(), TypeError>, repr: Repr) -> MimeBundl
         Repr::Ascii => None,
         Repr::Latex => latex_status(&plain),
     };
-    MimeBundle { text_plain: plain, text_latex }
+    MimeBundle {
+        text_plain: plain,
+        text_latex,
+    }
 }
 
 /// Render a run — a sequence of `(firing channel, state index)` steps produced
@@ -295,5 +319,8 @@ pub fn render_run(
         }
     };
 
-    MimeBundle { text_plain: plain, text_latex }
+    MimeBundle {
+        text_plain: plain,
+        text_latex,
+    }
 }

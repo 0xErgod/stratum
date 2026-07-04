@@ -170,8 +170,7 @@ pub fn complete(code: &str, cursor_pos: usize, ns: &Namespace) -> Completions {
                 line_trim, // includes the leading `#`
             );
             // The replaced token starts at the `#`.
-            let hash_start =
-                line_start + (line_before.chars().count() - line_trim.chars().count());
+            let hash_start = line_start + (line_before.chars().count() - line_trim.chars().count());
             return Completions {
                 matches,
                 cursor_start: hash_start,
