@@ -495,7 +495,10 @@ fn latex_mode_emits_text_latex() {
     assert!(ok_display(&out).text_plain.contains("LaTeX"));
 
     // A proc now carries a classic-rho text/latex payload alongside the ASCII.
-    let out = eval("#define hs\nnew req, ack\n\nreq!(0) | req(x).ack!(0)", &mut ns);
+    let out = eval(
+        "#define hs\nnew req, ack\n\nreq!(0) | req(x).ack!(0)",
+        &mut ns,
+    );
     let b = ok_display(&out);
     assert_eq!(b.text_plain, "req!(0) | req(v0).ack!(0)");
     let latex = b.text_latex.as_ref().expect("latex mode emits text/latex");

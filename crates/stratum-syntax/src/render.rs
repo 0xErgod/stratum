@@ -205,7 +205,10 @@ fn latex_proc(
         // Meredith–Radestock §2.0.1: `0`, `⌝x⌜` (drop), `x⟨|P|⟩` (lift/output).
         Proc::Zero => "0".to_string(),
         Proc::Drop(name) => {
-            format!(r"\urcorner {} \ulcorner", latex_name(name, env, counter, aliases))
+            format!(
+                r"\urcorner {} \ulcorner",
+                latex_name(name, env, counter, aliases)
+            )
         }
         Proc::Lift { chan, arg } => {
             let chan_s = latex_name(chan, env, counter, aliases);
@@ -269,7 +272,10 @@ fn latex_name(
             .map(|(_, id)| id.clone())
             .unwrap_or_else(|| format!("v_{{{sym}}}")),
         Name::Quote(p) => {
-            format!(r"\ulcorner {} \urcorner", latex_proc(p, env, counter, aliases))
+            format!(
+                r"\ulcorner {} \urcorner",
+                latex_proc(p, env, counter, aliases)
+            )
         }
     }
 }

@@ -180,7 +180,11 @@ fn run_define(after: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
 
 /// Parse a DSL `source` into a process, bind it under `name` (or an
 /// auto-generated name when `None`), and render it.
-fn run_dsl(source: &str, name: Option<String>, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
+fn run_dsl(
+    source: &str,
+    name: Option<String>,
+    ns: &mut Namespace,
+) -> Result<Vec<MimeBundle>, CellError> {
     guard_nesting(source)?;
     let (proc, aliases) = parse_with_aliases(source).map_err(|e| parse_error(source, &e))?;
     ns.absorb_aliases(&proc, aliases);
@@ -243,7 +247,10 @@ fn dir_check(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
     reject_ex_on_reduced(&compiled, reduction)?;
     let label = compiled.labelling();
     let checked = holds_checked(lts, &compiled.formula, &label);
-    Ok(vec![apply_caveat(render_checked(checked, ns.repr()), reduction)])
+    Ok(vec![apply_caveat(
+        render_checked(checked, ns.repr()),
+        reduction,
+    )])
 }
 
 /// `#witness <formula> on <ltsname>`
@@ -353,7 +360,10 @@ fn dir_step(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError
             )))
         }
     };
-    Ok(vec![MimeBundle { text_plain: plain, text_latex }])
+    Ok(vec![MimeBundle {
+        text_plain: plain,
+        text_latex,
+    }])
 }
 
 /// `#trace <ltsname>` — a sample run from the initial state.
@@ -383,7 +393,13 @@ fn dir_trace(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
             "trace: the initial state is terminal (no transitions)",
         )]);
     }
-    Ok(vec![render_run("trace", &run, lts, ns.aliases(), ns.repr())])
+    Ok(vec![render_run(
+        "trace",
+        &run,
+        lts,
+        ns.aliases(),
+        ns.repr(),
+    )])
 }
 
 /// `#typecheck <procname|inline DSL> [with a:Ty, b:Ty, ...]`
