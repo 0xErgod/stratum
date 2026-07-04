@@ -296,6 +296,32 @@ async fn drive(ports: ConnPorts) {
     assert_eq!(li["mimetype"], "text/x-stratum");
     assert_eq!(li["file_extension"], ".strat");
 
+    // kernel_info must ALSO publish iopub busy/idle parented to the request, or
+    // `jupyter_client.wait_for_ready` (JupyterLab / the VS Code Jupyter
+    // extension use it on startup) hangs waiting for that idle. The busy/idle
+    // are emitted before the shell reply, so they are already queued on the SUB.
+    let kinfo_id = reply.parent_header["msg_id"].clone();
+    let mut kinfo_io = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let m = decode_verified(recv(&mut iopub).await);
+            if m.parent_header["msg_id"] != kinfo_id {
+                continue;
+            }
+            let idle = m.header["msg_type"] == "status" && m.content["execution_state"] == "idle";
+            kinfo_io.push(m);
+            if idle {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("no iopub idle after kernel_info — wait_for_ready would hang");
+    assert!(
+        saw_busy_idle(&kinfo_io),
+        "kernel_info must publish busy+idle on iopub (wait_for_ready readiness)"
+    );
+
     // ---- execute a DSL cell -> display_data + execute_reply ---------------
     // A plain DSL cell defines a process into the session namespace and renders
     // the transparency pair as a display_data (text/plain + text/html).

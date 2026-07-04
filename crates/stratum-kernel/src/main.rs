@@ -182,8 +182,17 @@ async fn handle_shell(
     let session = session_of(msg, kernel_session);
     match msg.msg_type() {
         "kernel_info_request" => {
-            let reply = reply_to(msg, "kernel_info_reply", &session, kernel_info_content());
-            Ok(Some(reply.into_frames(key)))
+            // Bracket with iopub busy/idle like every other shell handler.
+            // `jupyter_client.wait_for_ready` (used on startup by JupyterLab and
+            // the VS Code Jupyter extension) sends a `kernel_info_request` and
+            // blocks until it sees a `status: idle` on iopub parented to it; a
+            // kernel that replies on shell but never publishes that idle hangs
+            // the frontend's readiness check.
+            publish_status(iopub, key, &session, msg, "busy").await?;
+            let frames = reply_to(msg, "kernel_info_reply", &session, kernel_info_content())
+                .into_frames(key);
+            publish_status(iopub, key, &session, msg, "idle").await?;
+            Ok(Some(frames))
         }
         "execute_request" => {
             let code = msg
