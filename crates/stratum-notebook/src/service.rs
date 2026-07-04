@@ -559,9 +559,12 @@ pub fn is_complete(code: &str) -> IsComplete {
         Ok(_) => IsComplete::Complete,
         Err(e) => {
             // The parser reports `found end of input` for a well-formed prefix
-            // (unclosed bracket, dangling `.`, unfinished output). Anything else
-            // is a genuine syntax error.
-            if e.message.contains("end of input") {
+            // (unclosed bracket, dangling `.`, unfinished output). We must match
+            // that exact phrasing, NOT a bare `end of input`: a trailing-token
+            // error reads `expected end of input, found <Y>` (e.g. the missing
+            // `|` in `a!(0) b!(0)`) and is a genuine hard error — it must fall
+            // through to Invalid, or the frontend would never accept the cell.
+            if e.message.contains("found end of input") {
                 IsComplete::Incomplete {
                     indent: "    ".to_string(),
                 }
@@ -771,6 +774,15 @@ mod tests {
     fn is_complete_invalid() {
         assert_eq!(is_complete(")"), IsComplete::Invalid);
         assert_eq!(is_complete("#$%^ garbage"), IsComplete::Invalid);
+    }
+
+    #[test]
+    fn is_complete_trailing_tokens_are_invalid_not_incomplete() {
+        // A trailing-token error reads `expected end of input, found …` — a
+        // genuine hard error (a missing `|`), NOT a well-formed prefix. It must
+        // classify Invalid, else the frontend never accepts the cell (hang).
+        assert_eq!(is_complete("a!(0) b!(0)"), IsComplete::Invalid);
+        assert_eq!(is_complete("a!(0) 0"), IsComplete::Invalid);
     }
 
     // ---- panic-safety ----------------------------------------------------
