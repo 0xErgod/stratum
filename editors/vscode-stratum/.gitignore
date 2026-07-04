@@ -1,0 +1,6 @@
+# Build / dependency artifacts for the VS Code extension — commit source only.
+node_modules/
+out/
+*.vsix
+package-lock.json
+*.tsbuildinfo

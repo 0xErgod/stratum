@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Stratum",
+  "scopeName": "source.stratum",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#def-declaration" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#call-name" },
+    { "include": "#named-argument" },
+    { "include": "#operators" },
+    { "include": "#separators" },
+    { "include": "#brackets" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "comment": "Line comment `// ...` (tree-sitter @comment).",
+      "match": "//[^\\n]*",
+      "name": "comment.line.double-slash.stratum"
+    },
+    "def-declaration": {
+      "comment": "`def NAME` — declaration keyword binding a definition site (tree-sitter `def` @keyword + `(def name:)` @function).",
+      "match": "\\b(def)\\b(\\s+)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.stratum" },
+        "3": { "name": "entity.name.function.stratum" }
+      }
+    },
+    "keywords": {
+      "comment": "Declaration keywords `def` / `new` (tree-sitter @keyword).",
+      "match": "\\b(def|new)\\b",
+      "name": "keyword.control.stratum"
+    },
+    "constants": {
+      "comment": "The null process `nil` / `0` (tree-sitter (nil) @constant.builtin).",
+      "match": "\\b(nil|0)\\b",
+      "name": "constant.language.stratum"
+    },
+    "numbers": {
+      "comment": "Integer literals other than the null process `0`.",
+      "match": "\\b\\d+\\b",
+      "name": "constant.numeric.stratum"
+    },
+    "call-name": {
+      "comment": "Macro call (or input channel): identifier immediately before `(` (tree-sitter `(call macro:)` @function.call).",
+      "match": "[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()",
+      "name": "entity.name.function.stratum"
+    },
+    "named-argument": {
+      "comment": "Named-argument parameter: identifier immediately before `<-` (tree-sitter (named_argument param:) @variable.parameter).",
+      "match": "[A-Za-z_][A-Za-z0-9_]*(?=\\s*<-)",
+      "name": "variable.parameter.stratum"
+    },
+    "operators": {
+      "comment": "Operators `@` (quote) `*` (drop) `!` (lift) `|` (par) `<-` (named-arg arrow); arrow first so `<` is not read alone (tree-sitter @operator).",
+      "match": "<-|[@*!|]",
+      "name": "keyword.operator.stratum"
+    },
+    "separators": {
+      "comment": "Sequencing dot and separators `.` `,` (tree-sitter @punctuation.delimiter).",
+      "match": "[.,]",
+      "name": "punctuation.separator.stratum"
+    },
+    "brackets": {
+      "comment": "Grouping / body brackets `()` `{}` `[]` (tree-sitter @punctuation.bracket).",
+      "match": "[(){}\\[\\]]",
+      "name": "punctuation.brackets.stratum"
+    },
+    "identifiers": {
+      "comment": "Any remaining identifier: a bound / free name (tree-sitter (identifier) @variable).",
+      "match": "[A-Za-z_][A-Za-z0-9_]*",
+      "name": "variable.other.stratum"
+    }
+  }
+}
