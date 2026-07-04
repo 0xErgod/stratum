@@ -33,7 +33,9 @@ use stratum_core::{
 };
 
 mod event;
+mod trace;
 pub use event::{run_events, Event, EventKey, OccKey};
+pub use trace::Trace;
 
 /// A labelled transition to another state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -861,7 +863,7 @@ fn heap_permute(current: &mut [usize], k: usize, out: &mut Vec<Vec<usize>>) {
     }
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
