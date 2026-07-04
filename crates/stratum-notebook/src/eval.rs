@@ -35,7 +35,7 @@ const MAX_NESTING_DEPTH: usize = 256;
 
 /// Reject a string whose maximum bracket/paren/brace nesting exceeds
 /// [`MAX_NESTING_DEPTH`], before it reaches a non-depth-guarded toolkit parser.
-fn guard_nesting(src: &str) -> Result<(), CellError> {
+pub(crate) fn guard_nesting(src: &str) -> Result<(), CellError> {
     let mut depth: usize = 0;
     let mut max: usize = 0;
     for c in src.chars() {
@@ -118,7 +118,7 @@ fn run_dsl(cell: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError>
 
 /// Split an optional leading `name =` binding off a DSL cell. The surface syntax
 /// contains no `=` token, so a leading `IDENT =` is unambiguously a binding.
-fn split_binding(cell: &str) -> (Option<String>, &str) {
+pub(crate) fn split_binding(cell: &str) -> (Option<String>, &str) {
     if let Some(eq) = cell.find('=') {
         let lhs = cell[..eq].trim();
         if is_ident(lhs) {
@@ -630,7 +630,7 @@ fn split_first_word(s: &str) -> (&str, &str) {
 }
 
 /// Whether `s` is a single DSL identifier (`[A-Za-z_][A-Za-z0-9_]*`).
-fn is_ident(s: &str) -> bool {
+pub(crate) fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c.is_alphabetic() || c == '_' => {}

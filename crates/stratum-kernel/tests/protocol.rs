@@ -341,6 +341,92 @@ async fn drive(ports: ConnPorts) {
         "parse-error cell must broadcast an iopub error"
     );
 
+    // ---- complete_request -> complete_reply -------------------------------
+    // `_1` and `g` are bound in the session by now (the DSL cell auto-named
+    // `_1`, and `%explore ... -> g` bound the LTS). Completing `%exp` must
+    // offer the directive names with a `%`-anchored replacement range.
+    shell
+        .send(
+            ZmqMessage::try_from(fe.request(
+                "complete_request",
+                json!({ "code": "%exp", "cursor_pos": 4 }),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let reply = decode_verified(recv(&mut shell).await);
+    assert_eq!(reply.header["msg_type"], "complete_reply");
+    assert_eq!(reply.content["status"], "ok");
+    assert_eq!(reply.content["cursor_start"], 0);
+    assert_eq!(reply.content["cursor_end"], 4);
+    let matches: Vec<String> = reply.content["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        matches.contains(&"%explore".to_string()) && matches.contains(&"%expand".to_string()),
+        "complete_reply must offer directive names, got {matches:?}"
+    );
+
+    // ---- inspect_request on a bound name -> inspect_reply{found:true} ------
+    shell
+        .send(
+            ZmqMessage::try_from(fe.request(
+                "inspect_request",
+                json!({ "code": "g", "cursor_pos": 0, "detail_level": 0 }),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let reply = decode_verified(recv(&mut shell).await);
+    assert_eq!(reply.header["msg_type"], "inspect_reply");
+    assert_eq!(reply.content["status"], "ok");
+    assert_eq!(reply.content["found"], true, "`g` is a bound LTS");
+    let plain = reply.content["data"]["text/plain"]
+        .as_str()
+        .expect("inspect_reply must carry text/plain");
+    assert!(plain.contains("lts `g`"), "unexpected inspection: {plain}");
+
+    // An unknown token -> found:false with empty data.
+    shell
+        .send(
+            ZmqMessage::try_from(fe.request(
+                "inspect_request",
+                json!({ "code": "zzz_unbound", "cursor_pos": 2, "detail_level": 0 }),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let reply = decode_verified(recv(&mut shell).await);
+    assert_eq!(reply.header["msg_type"], "inspect_reply");
+    assert_eq!(reply.content["found"], false);
+
+    // ---- is_complete_request -> is_complete_reply -------------------------
+    for (code, want) in [
+        ("new a\na!(0)", "complete"),
+        ("a(x).", "incomplete"),
+        (")", "invalid"),
+    ] {
+        shell
+            .send(
+                ZmqMessage::try_from(fe.request("is_complete_request", json!({ "code": code })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let reply = decode_verified(recv(&mut shell).await);
+        assert_eq!(reply.header["msg_type"], "is_complete_reply");
+        assert_eq!(
+            reply.content["status"], want,
+            "is_complete({code:?}) should be {want}"
+        );
+    }
+
     // ---- heartbeat echo ---------------------------------------------------
     hb.send(ZmqMessage::from(Bytes::from_static(b"ping")))
         .await

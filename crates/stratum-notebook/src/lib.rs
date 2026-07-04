@@ -28,6 +28,7 @@
 mod eval;
 mod formula;
 mod render;
+mod service;
 
 use std::collections::HashMap;
 
@@ -43,6 +44,7 @@ pub use render::{
     dot_to_svg, escape_html, render_checked, render_lts, render_proc, render_run, render_typecheck,
     render_verdict, MimeBundle,
 };
+pub use service::{complete, inspect, is_complete, Completions, Inspection, IsComplete};
 
 /// How an [`Lts`] binding was reduced during exploration — which determines the
 /// class of temporal properties whose verdicts are trustworthy against it.
@@ -200,6 +202,27 @@ impl Namespace {
     #[must_use]
     pub fn resolve_name(&self, ident: &str) -> Option<Name> {
         self.names.get(ident).cloned()
+    }
+
+    /// The names of every object bound in this session, in stable sorted order.
+    ///
+    /// Used by the interactive [`crate::complete`] / [`crate::inspect`] services
+    /// to offer bound namespace names as completion candidates.
+    #[must_use]
+    pub fn binding_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.objs.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// The surface identifiers that resolve to a channel [`Name`] in this
+    /// session (harvested from every DSL parse), in stable sorted order. These
+    /// are the names usable inside `emits(...)` and directive channel lists.
+    #[must_use]
+    pub fn channel_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.names.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// The alias table from the most recent DSL parse.
