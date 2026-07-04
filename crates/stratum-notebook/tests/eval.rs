@@ -291,16 +291,14 @@ fn parse_error_has_span() {
 }
 
 #[test]
-fn reserved_and_unknown_magics_error() {
+fn unknown_magic_errors() {
     let mut ns = Namespace::new();
-    let out = eval("%%rune\nsome code", &mut ns);
-    let err = out.error.expect("%%rune reserved");
-    assert_eq!(err.ename, "MagicError");
-    assert!(err.evalue.contains("rune"));
-
+    // `%%rune` is a real magic now (covered by tests/rune.rs); only *unknown*
+    // `%%` magics error.
     let out = eval("%%bogus", &mut ns);
     let err = out.error.expect("unknown magic");
     assert_eq!(err.ename, "MagicError");
+    assert!(err.evalue.contains("bogus"));
 }
 
 #[test]

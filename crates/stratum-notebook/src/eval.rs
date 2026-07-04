@@ -6,7 +6,7 @@
 //! toolkit logic (parse, explore, check, bisim, typecheck) is invoked here and
 //! immediately rendered; nothing panics on bad input.
 
-use stratum::core::{canonicalize, canonicalize_name, step_labeled, Name, Proc};
+use stratum::core::{canonicalize, step_labeled, Name, Proc};
 use stratum::equiv::{strong_barbed_bisimilar, weak_barbed_bisimilar};
 use stratum::logic::{counterexample, holds_checked, witness};
 use stratum::lts::Lts;
@@ -18,7 +18,7 @@ use crate::render::{
     render_checked, render_lts, render_proc, render_run, render_typecheck, render_verdict,
     MimeBundle,
 };
-use crate::{collect_names, CellError, CellOutcome, Namespace, Obj, Reduction};
+use crate::{default_observations, CellError, CellOutcome, Namespace, Obj, Reduction};
 
 /// The default bounded-exploration state cap for directives that build an LTS.
 const DEFAULT_BOUND: usize = 1000;
@@ -65,6 +65,12 @@ pub fn evaluate(cell: &str, ns: &mut Namespace) -> CellOutcome {
     if trimmed.is_empty() {
         return CellOutcome::default();
     }
+    // `%%rune` is a cell magic that runs an embedded script and produces its own
+    // full outcome (captured stdout + a rendered return value + any error), so it
+    // is dispatched before the generic display/err mapping below.
+    if let Some(body) = strip_rune_magic(trimmed) {
+        return crate::script::run_rune(body, ns);
+    }
     let result = if trimmed.starts_with("%%") {
         run_magic(trimmed)
     } else if let Some(rest) = trimmed.strip_prefix('%') {
@@ -89,16 +95,27 @@ pub fn evaluate(cell: &str, ns: &mut Namespace) -> CellOutcome {
 fn run_magic(cell: &str) -> Result<Vec<MimeBundle>, CellError> {
     let body = cell.strip_prefix("%%").unwrap_or(cell);
     let (name, _rest) = split_first_word(body);
-    match name {
-        "rune" => Err(CellError::new(
-            "MagicError",
-            "cell magic `%%rune` is reserved for a later phase",
-        )),
-        other => Err(CellError::new(
-            "MagicError",
-            format!("unknown cell magic `%%{other}`"),
-        )),
+    // `%%rune` is intercepted earlier in `evaluate` (it produces a full
+    // `CellOutcome`), so it never reaches here; every other `%%` magic is unknown.
+    Err(CellError::new(
+        "MagicError",
+        format!("unknown cell magic `%%{name}`"),
+    ))
+}
+
+/// If `cell` is a `%%rune` magic, return the script body (everything after the
+/// `%%rune` line); otherwise `None`. Any text on the same line as `%%rune` is
+/// treated as part of the magic line and dropped.
+fn strip_rune_magic(cell: &str) -> Option<&str> {
+    let body = cell.strip_prefix("%%")?;
+    let (name, rest) = split_first_word(body);
+    if name != "rune" {
+        return None;
     }
+    Some(match rest.find('\n') {
+        Some(i) => &rest[i + 1..],
+        None => "",
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -492,22 +509,6 @@ fn resolve_names(idents: &[String], ns: &Namespace) -> Result<Vec<Name>, CellErr
         .collect()
 }
 
-/// The default observation set for `%bisim`: every channel occurring in either
-/// process, deduplicated up to structural congruence.
-fn default_observations(p: &Proc, q: &Proc) -> Vec<Name> {
-    let mut raw = Vec::new();
-    collect_names(p, &mut raw);
-    collect_names(q, &mut raw);
-    let mut out: Vec<Name> = Vec::new();
-    for n in raw {
-        let c = canonicalize_name(&n);
-        if !out.contains(&c) {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// Parse a minimal typing environment: `a:Ty, b:Ty, ...` where `Ty` is `Nil`,
 /// `Proc`, or `Chan(Ty)`. Channel names resolve via the namespace.
 fn parse_env(src: &str, ns: &Namespace) -> Result<Env, CellError> {
@@ -677,7 +678,19 @@ Stratum notebook directives:
   %step <p>                                       one-step reducts
   %trace <lts>                                    a sample run
   %typecheck <p> [with a:Ty, b:Ty]               channel-sort typecheck
+  %%rune <newline> <script>                      run an embedded Rune script
   %help                                           this list
+
+%%rune: the rest of the cell is a Rune script (an implicit `pub fn main()`) with
+a curated `stratum` module bound in and this session's bindings shared. Free fns:
+stratum::parse(src) -> proc; stratum::explore(p, bound) / explore_por / _symmetric
+-> lts; stratum::check(lts, formula) -> bool (same formula language as %check);
+stratum::witness / counterexample(lts, f) -> [state indices]; stratum::bisim(p, q,
+weak) -> verdict; stratum::get(name) / set(name, value) read / write bindings.
+`println!(...)` is captured as the cell's stdout; the final expression is the
+display. A runaway Rune loop trips a per-instruction budget and errors cleanly;
+the budget does NOT bound work inside a single native call (a big explore/check/
+bisim is limited only by its own arguments, e.g. the exploration state cap).
 
 Formula fragment: EF/AG/AF/EG/EX φ, φ & ψ, φ | ψ, !φ, ( ), and the atomic
 proposition emits(<name>) — a top-level OUTPUT barb on the named channel.

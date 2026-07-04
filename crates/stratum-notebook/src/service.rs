@@ -397,6 +397,7 @@ fn inspect_obj(name: &str, obj: &Obj, ns: &Namespace) -> Inspection {
             format!("checked `{name}`\n  {verdict} ({exactness})")
         }
         Obj::Bool(b) => format!("bool `{name}`\n  {b}"),
+        Obj::Int(i) => format!("int `{name}`\n  {i}"),
         Obj::Text(t) => format!("text `{name}`\n  {t}"),
     };
     Inspection {
