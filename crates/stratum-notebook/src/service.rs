@@ -165,8 +165,9 @@ pub fn complete(code: &str, cursor_pos: usize, ns: &Namespace) -> Completions {
         }
     }
 
-    // Otherwise a DSL cell.
-    let cands = dsl_candidates(code, ns);
+    // Otherwise a DSL cell. Completion is *cursor-scope-aware*: only cell-local
+    // names whose binder precedes the cursor are offered (see [`dsl_candidates`]).
+    let cands = dsl_candidates(code, cursor, ns);
     Completions {
         matches: filtered(cands.into_iter(), &prefix),
         cursor_start: tok_start,
@@ -198,12 +199,33 @@ fn directive_arg_candidates(dir: &str, line_before: &str, ns: &Namespace) -> Vec
     }
 }
 
-/// Candidate tokens for a DSL cell: keywords, stdlib macros, cell-local
-/// `def`/`new` names, and bound namespace names.
-fn dsl_candidates(code: &str, ns: &Namespace) -> Vec<String> {
+/// Candidate tokens for a DSL cell, **scope-aware** at `cursor` (a codepoint
+/// offset): keywords, stdlib macros, the cell-local `def`/`new` names *whose
+/// binder precedes the cursor*, and bound namespace names.
+///
+/// ## What "scope-aware" covers — and what it approximates
+///
+/// **Covered.** A cell-local name is offered only once the cursor has moved past
+/// its `new`/`def` binder, so a name bound *later* in the same cell is never
+/// suggested (`dsl_candidates` filters [`cell_binders`] by `offset < cursor`).
+/// Keywords, stdlib macros, and session-namespace bindings are always in scope.
+///
+/// **Approximated (the honest gaps).** This never parses — it is a line scan, so
+/// it stays robust on the incomplete cells completion is most useful for. As a
+/// consequence: (1) a binder is treated as in scope over the *whole* remainder of
+/// the cell, so a `new` inside a `def { … }` body is not retracted once its
+/// `{ … }` block closes, and lexical shadowing is not modelled; (2) input binders
+/// (`x(y).`) and macro parameters are not harvested (they never were). The
+/// recursive-descent runtime is the authoritative scoper; this is a completion
+/// heuristic tuned to never over-promise a name bound only later.
+fn dsl_candidates(code: &str, cursor: usize, ns: &Namespace) -> Vec<String> {
     let mut out: Vec<String> = KEYWORDS.iter().map(|s| (*s).to_string()).collect();
     out.extend(stdlib_macro_names());
-    out.extend(scan_cell_names(code));
+    for (name, offset) in cell_binders(code) {
+        if offset < cursor && !out.contains(&name) {
+            out.push(name);
+        }
+    }
     out.extend(ns.binding_names());
     out
 }
@@ -273,6 +295,80 @@ fn scan_cell_names(code: &str) -> Vec<String> {
                 .collect();
             if !name.is_empty() && !out.contains(&name) {
                 out.push(name);
+            }
+        }
+    }
+    out
+}
+
+/// Harvest the cell-local `new` / `def` binder names paired with the **codepoint
+/// offset** at which each name begins in `code`.
+///
+/// This is the scope-aware companion to [`scan_cell_names`]: the offset lets the
+/// caller keep only the names whose binder precedes the cursor. Like that scan it
+/// is a deliberate line heuristic (never a parse), so it works on the incomplete
+/// cells completion targets: `new a, b` contributes `(a, off_a)` and `(b, off_b)`;
+/// `def foo(...)` / `def foo { ... }` contribute `(foo, off_foo)`.
+fn cell_binders(code: &str) -> Vec<(String, usize)> {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out: Vec<(String, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        // Bound the current line `[line_start, line_end)`, then step past `\n`.
+        let line_start = i;
+        while i < chars.len() && chars[i] != '\n' {
+            i += 1;
+        }
+        let line_end = i;
+        if i < chars.len() {
+            i += 1;
+        }
+
+        // Skip leading whitespace and read the first word (the keyword, if any).
+        let mut j = line_start;
+        while j < line_end && (chars[j] == ' ' || chars[j] == '\t') {
+            j += 1;
+        }
+        let keyword: String = chars[j..line_end]
+            .iter()
+            .take_while(|c| is_word(**c))
+            .collect();
+        let is_new = keyword == "new";
+        let is_def = keyword == "def";
+        if !(is_new || is_def) {
+            continue;
+        }
+        let mut k = j + keyword.chars().count();
+
+        if is_def {
+            // `def NAME …` — a single binder name.
+            while k < line_end && (chars[k] == ' ' || chars[k] == '\t') {
+                k += 1;
+            }
+            let name: String = chars[k..line_end]
+                .iter()
+                .take_while(|c| is_word(**c))
+                .collect();
+            if !name.is_empty() {
+                out.push((name, k));
+            }
+        } else {
+            // `new n1, n2, …` — comma/space-separated binder names.
+            while k < line_end {
+                match chars[k] {
+                    ' ' | '\t' | ',' => k += 1,
+                    c if is_word(c) => {
+                        let start = k;
+                        let name: String = chars[k..line_end]
+                            .iter()
+                            .take_while(|c| is_word(**c))
+                            .collect();
+                        k += name.chars().count();
+                        out.push((name, start));
+                    }
+                    // Anything else (`(`, `.`, …) ends the `new` binder list.
+                    _ => break,
+                }
             }
         }
     }
@@ -656,6 +752,55 @@ mod tests {
         assert!(c.matches.contains(&"foo".to_string()));
         assert_eq!(c.cursor_start, 8);
         assert_eq!(c.cursor_end, 9);
+    }
+
+    // ---- complete: scope-awareness ---------------------------------------
+
+    #[test]
+    fn complete_scope_aware_new_before_cursor_is_offered() {
+        let ns = Namespace::new();
+        // `chan` is bound by a `new` that precedes the cursor on the next line.
+        let code = "new chan\nch";
+        let c = complete(code, code.chars().count(), &ns);
+        assert!(c.matches.contains(&"chan".to_string()));
+    }
+
+    #[test]
+    fn complete_scope_aware_name_bound_later_is_not_offered() {
+        let ns = Namespace::new();
+        // Cursor sits on line 1 (offset 2, just past `la`); `later` is only bound
+        // by a `new` on line 2 — out of scope at the cursor, so NOT offered even
+        // though it shares the typed prefix.
+        let c = complete("la\nnew later", 2, &ns);
+        assert!(!c.matches.contains(&"later".to_string()));
+        // Sanity: once the cursor is past the binder, the same name IS offered.
+        let after = "new later\nla";
+        let c2 = complete(after, after.chars().count(), &ns);
+        assert!(c2.matches.contains(&"later".to_string()));
+    }
+
+    #[test]
+    fn complete_scope_aware_keeps_namespace_and_macros() {
+        let ns = seeded();
+        // Empty prefix at the cursor: keywords, macros, in-scope cell names, and
+        // namespace bindings are all offered.
+        let c = complete("new x\n", 6, &ns);
+        assert!(c.matches.contains(&"new".to_string())); // keyword
+        assert!(c.matches.contains(&"bang".to_string())); // stdlib macro
+        assert!(c.matches.contains(&"srv".to_string())); // namespace binding
+        assert!(c.matches.contains(&"x".to_string())); // in-scope `new` name
+    }
+
+    #[test]
+    fn complete_scope_aware_multi_new_offsets() {
+        let ns = Namespace::new();
+        // `new a, b, c` — the cursor between `b` and `c` sees `a`, `b` but not `c`.
+        // Offsets: a@4 b@7 c@10; cursor at 9 (inside/after `b`).
+        let code = "new a, b, c";
+        let c = complete(code, 9, &ns);
+        assert!(c.matches.contains(&"a".to_string()));
+        assert!(c.matches.contains(&"b".to_string()));
+        assert!(!c.matches.contains(&"c".to_string()));
     }
 
     // ---- complete: codepoint cursor correctness --------------------------

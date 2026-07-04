@@ -1,0 +1,13 @@
+// A small Stratum sample exercising every highlight category.
+def relay(c, d) {
+  new tmp
+  c(x).d!(*x)
+}
+
+macro echo(c) { c(x).c!(*x) }
+
+new a, b
+relay(a <- @0, b)
+| a!(@0)
+| *b
+| nil

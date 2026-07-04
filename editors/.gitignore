@@ -1,0 +1,24 @@
+# Build artifacts for the editor integrations under `editors/` — commit only
+# source + config, never generated output.
+
+# --- Node / JupyterLab (jupyterlab-stratum) ---
+node_modules/
+lib/
+*.tsbuildinfo
+.yarn/
+.yarn-cache/
+.pnp.*
+jupyterlab_stratum/labextension/
+jupyterlab_stratum/_version.py
+# Generated Lezer parser (if a grammar is ever added).
+**/*.grammar.js
+**/*.grammar.terms.js
+
+# --- Python / Pygments (stratum-pygments) ---
+.venv*/
+__pycache__/
+*.egg-info/
+*.egg
+build/
+dist/
+.pytest_cache/

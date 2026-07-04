@@ -1,0 +1,50 @@
+{
+  "name": "jupyterlab-stratum",
+  "version": "0.1.0",
+  "description": "JupyterLab 4 CodeMirror 6 language for the Stratum reflective ρ-calculus surface syntax (.strat / text/x-stratum).",
+  "keywords": [
+    "jupyter",
+    "jupyterlab",
+    "jupyterlab-extension",
+    "codemirror",
+    "stratum",
+    "rho-calculus"
+  ],
+  "homepage": "https://github.com/0xErgod/stratum",
+  "license": "MIT OR Apache-2.0",
+  "author": "Stratum",
+  "files": [
+    "lib/**/*.{d.ts,js,js.map}",
+    "src/**/*.{ts,tsx}",
+    "style/**/*.css"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "jlpm build:lib",
+    "build:lib": "tsc",
+    "build:all": "jlpm build:lib && jlpm build:labextension",
+    "build:labextension": "jupyter labextension build .",
+    "check:types": "tsc --noEmit",
+    "clean": "rimraf lib tsconfig.tsbuildinfo jupyterlab_stratum/labextension",
+    "watch": "tsc -w"
+  },
+  "dependencies": {
+    "@codemirror/language": "^6.0.0",
+    "@jupyterlab/application": "^4.0.0",
+    "@jupyterlab/codemirror": "^4.0.0",
+    "@lezer/highlight": "^1.0.0"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.0.0",
+    "rimraf": "^5.0.0",
+    "typescript": "~5.4.0"
+  },
+  "sideEffects": [
+    "style/*.css"
+  ],
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "jupyterlab_stratum/labextension"
+  }
+}
