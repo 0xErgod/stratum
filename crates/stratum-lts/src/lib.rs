@@ -1,6 +1,6 @@
 //! # stratum-lts
 //!
-//! The **trace grain** (ρ) of the πρσϕ-Formalism: a labelled transition system
+//! The **trace layer**: a labelled transition system
 //! (LTS) built from the ρ-calculus reduction relation of [`stratum_core`].
 //!
 //! States are canonical processes (so `≡`-congruent processes are the *same*

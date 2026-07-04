@@ -18,9 +18,9 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/0xErgod/stratum"
 
-# Stratum — an executable core for the πρσϕ-Formalism.
+# Stratum — a reflective ρ-calculus playground for protocol design and analysis.
 #
-# `stratum-core` (milestone 1) is the process grain: the reflective higher-order
+# `stratum-core` (milestone 1) is the process layer: the reflective higher-order
 # (ρ) calculus of Meredith & Radestock (ENTCS 141(5), 2005), used here as the
 # *closed* process theory that generates traces. Later crates add reduction,
 # the trace LTS, field measurability, and the temporal-logic checker.

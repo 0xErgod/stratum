@@ -1,6 +1,6 @@
 //! # stratum-types
 //!
-//! A **type-theory grain** for the reflective higher-order (ρ) calculus of
+//! A **type-theory layer** for the reflective higher-order (ρ) calculus of
 //! Meredith & Radestock — a first *channel-sort / behavioral* typing discipline
 //! over [`stratum_core`], with a checker and examples. It is a tractable first
 //! cut at the paper's forthcoming namespace-logic type system, not that system

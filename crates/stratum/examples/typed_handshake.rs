@@ -1,4 +1,4 @@
-//! End-to-end demo of the `stratum-types` grain: give the handshake's channels a
+//! End-to-end demo of the `stratum-types` crate: give the handshake's channels a
 //! sorting, type-check the protocol, and watch an ill-sorted variant get
 //! rejected with a clear error.
 //!
