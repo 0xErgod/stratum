@@ -9,6 +9,8 @@ members = [
     "crates/stratum-types",
     "crates/stratum-syntax",
     "crates/stratum",
+    "crates/stratum-notebook",
+    "crates/stratum-kernel",
 ]
 
 [workspace.package]

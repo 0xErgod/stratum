@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "stratum-kernel",
+    "{connection_file}"
+  ],
+  "display_name": "Stratum",
+  "language": "stratum",
+  "interrupt_mode": "message",
+  "metadata": {
+    "description": "Stratum — executable core for the πρσϕ-Formalism (reflective ρ-calculus). Phase 0 walking skeleton."
+  }
+}
