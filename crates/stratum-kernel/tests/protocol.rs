@@ -101,6 +101,7 @@ impl Frontend {
 
 /// A decoded reply: the four JSON blobs plus verification that the signature the
 /// kernel produced is valid.
+#[derive(Clone)]
 struct Decoded {
     header: Value,
     parent_header: Value,
@@ -136,6 +137,59 @@ fn decode_verified(msg: ZmqMessage) -> Decoded {
         parent_header: serde_json::from_slice(parent).unwrap(),
         content: serde_json::from_slice(content).unwrap(),
     }
+}
+
+/// Send an `execute_request` and collect every iopub message parented to it up
+/// to and including the terminal `idle` status, then read the shell reply.
+/// Returns `(reply, iopub_messages)`.
+async fn execute(
+    shell: &mut DealerSocket,
+    iopub: &mut SubSocket,
+    fe: &Frontend,
+    code: &str,
+    silent: bool,
+) -> (Decoded, Vec<Decoded>) {
+    let req = fe.request("execute_request", json!({ "code": code, "silent": silent }));
+    let id = req_msg_id(&req);
+    shell
+        .send(ZmqMessage::try_from(req).unwrap())
+        .await
+        .unwrap();
+
+    let mut msgs = Vec::new();
+    timeout(RECV_TIMEOUT, async {
+        loop {
+            let m = decode_verified(recv(iopub).await);
+            if m.parent_header["msg_id"] != Value::String(id.clone()) {
+                continue; // stray startup/other message
+            }
+            let is_idle =
+                m.header["msg_type"] == "status" && m.content["execution_state"] == "idle";
+            msgs.push(m);
+            if is_idle {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("did not observe idle on iopub — kernel likely hung");
+
+    let reply = decode_verified(recv(shell).await);
+    assert_eq!(reply.header["msg_type"], "execute_reply");
+    assert_eq!(reply.parent_header["msg_id"], Value::String(id));
+    (reply, msgs)
+}
+
+/// Whether the collected iopub messages contain both a `busy` and an `idle`
+/// status broadcast.
+fn saw_busy_idle(msgs: &[Decoded]) -> bool {
+    let busy = msgs
+        .iter()
+        .any(|m| m.header["msg_type"] == "status" && m.content["execution_state"] == "busy");
+    let idle = msgs
+        .iter()
+        .any(|m| m.header["msg_type"] == "status" && m.content["execution_state"] == "idle");
+    busy && idle
 }
 
 async fn recv(sock: &mut impl SocketRecv) -> ZmqMessage {
@@ -242,56 +296,50 @@ async fn drive(ports: ConnPorts) {
     assert_eq!(li["mimetype"], "text/x-stratum");
     assert_eq!(li["file_extension"], ".strat");
 
-    // ---- execute_request -> outputs + execute_reply -----------------------
-    let code = "new x in x!(*x)";
-    let exec_req = fe.request("execute_request", json!({ "code": code, "silent": false }));
-    let exec_req_id = req_msg_id(&exec_req);
-    shell
-        .send(ZmqMessage::try_from(exec_req).unwrap())
-        .await
-        .unwrap();
-
-    // Collect iopub messages whose parent is this execute_request until we've
-    // seen busy, an echo of the code, and idle.
-    let mut saw_busy = false;
-    let mut saw_idle = false;
-    let mut saw_echo = false;
-    let overall = timeout(RECV_TIMEOUT, async {
-        while !(saw_busy && saw_idle && saw_echo) {
-            let m = decode_verified(recv(&mut iopub).await);
-            if m.parent_header["msg_id"] != Value::String(exec_req_id.clone()) {
-                continue; // stray startup/other message
-            }
-            match m.header["msg_type"].as_str().unwrap_or("") {
-                "status" => match m.content["execution_state"].as_str() {
-                    Some("busy") => saw_busy = true,
-                    Some("idle") => saw_idle = true,
-                    _ => {}
-                },
-                "stream" => {
-                    if m.content["text"].as_str().unwrap_or("").contains(code) {
-                        saw_echo = true;
-                    }
-                }
-                "execute_result" if m.content["data"]["text/plain"].as_str() == Some(code) => {
-                    saw_echo = true;
-                }
-                _ => {}
-            }
-        }
-    })
-    .await;
+    // ---- execute a DSL cell -> display_data + execute_reply ---------------
+    // A plain DSL cell defines a process into the session namespace and renders
+    // the transparency pair as a display_data (text/plain + text/html).
+    let (reply, io) = execute(&mut shell, &mut iopub, &fe, "new a\n\na!(0)", false).await;
+    assert!(saw_busy_idle(&io), "missing busy/idle around the DSL cell");
+    let display = io
+        .iter()
+        .find(|m| m.header["msg_type"] == "display_data")
+        .expect("DSL cell must emit a display_data");
     assert!(
-        overall.is_ok(),
-        "did not observe busy+echo+idle on iopub (busy={saw_busy}, echo={saw_echo}, idle={saw_idle})"
+        display.content["data"]["text/plain"].as_str().is_some(),
+        "display_data must carry text/plain"
     );
-
-    // The execute_reply on the shell channel.
-    let reply = decode_verified(recv(&mut shell).await);
     assert_eq!(reply.header["msg_type"], "execute_reply");
-    assert_eq!(reply.parent_header["msg_id"], Value::String(exec_req_id));
     assert_eq!(reply.content["status"], "ok");
     assert_eq!(reply.content["execution_count"], 1);
+
+    // ---- %explore -> display_data carrying image/svg+xml ------------------
+    // Proves the wiring end to end: the notebook core lays the trace LTS out to
+    // an inline SVG and the kernel forwards it under the image/svg+xml MIME key.
+    let (reply, io) = execute(&mut shell, &mut iopub, &fe, "%explore _1 -> g", false).await;
+    assert_eq!(reply.content["status"], "ok");
+    assert_eq!(reply.content["execution_count"], 2);
+    let svg_display = io
+        .iter()
+        .find(|m| {
+            m.header["msg_type"] == "display_data"
+                && m.content["data"]["image/svg+xml"].as_str().is_some()
+        })
+        .expect("%explore must emit a display_data with image/svg+xml");
+    let svg = svg_display.content["data"]["image/svg+xml"]
+        .as_str()
+        .unwrap();
+    assert!(svg.contains("<svg"), "not an SVG payload: {svg:.60}");
+
+    // ---- a parse-error cell -> error reply + error broadcast --------------
+    let (reply, io) = execute(&mut shell, &mut iopub, &fe, "new a in a!(", false).await;
+    assert_eq!(reply.content["status"], "error", "parse error must fail");
+    assert_eq!(reply.content["execution_count"], 3);
+    assert_eq!(reply.content["ename"], "ParseError");
+    assert!(
+        io.iter().any(|m| m.header["msg_type"] == "error"),
+        "parse-error cell must broadcast an iopub error"
+    );
 
     // ---- heartbeat echo ---------------------------------------------------
     hb.send(ZmqMessage::from(Bytes::from_static(b"ping")))
@@ -324,9 +372,10 @@ async fn drive(ports: ConnPorts) {
     // correctly-signed request still gets a reply with the next execution_count.
     shell
         .send(
-            ZmqMessage::try_from(
-                fe.request("execute_request", json!({ "code": "ok", "silent": true })),
-            )
+            ZmqMessage::try_from(fe.request(
+                "execute_request",
+                json!({ "code": "new c\n\nc!(0)", "silent": true }),
+            ))
             .unwrap(),
         )
         .await
@@ -334,8 +383,8 @@ async fn drive(ports: ConnPorts) {
     let reply = decode_verified(recv(&mut shell).await);
     assert_eq!(reply.header["msg_type"], "execute_reply");
     assert_eq!(
-        reply.content["execution_count"], 2,
-        "count should advance to 2 (bad request never incremented it)"
+        reply.content["execution_count"], 4,
+        "count should advance to 4 (bad request never incremented it)"
     );
 
     // ---- clean shutdown via control --------------------------------------

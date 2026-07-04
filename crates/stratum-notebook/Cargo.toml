@@ -8,3 +8,7 @@ description = "Substrate-agnostic notebook core for Stratum: rendering, completi
 
 [dependencies]
 stratum = { path = "../stratum" }
+
+# Pure-Rust DOT parser + graph layout → SVG (no system Graphviz; matters on
+# Windows). Used to render an LTS's DOT into an inline SVG MIME part.
+layout-rs = "0.1"
