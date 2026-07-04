@@ -1,5 +1,5 @@
-//! The small FORMULA sub-language used by `%check` / `%witness` /
-//! `%counterexample`.
+//! The small FORMULA sub-language used by `#check` / `#witness` /
+//! `#counterexample`.
 //!
 //! ## Grammar
 //!

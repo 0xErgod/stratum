@@ -12,12 +12,13 @@
 //! A notebook session is a persistent [`Namespace`] of named objects ([`Obj`]).
 //! [`evaluate`] runs one cell against it:
 //!
-//! * A plain **DSL cell** parses a process (with an optional leading `name =`
-//!   binding), binds it into the namespace, and renders the transparency pair.
-//! * A line beginning with `%` is a **directive** — a thin wrapper over the
-//!   toolkit (`%explore`, `%check`, `%bisim`, `%typecheck`, …) that renders its
+//! * A plain **DSL cell** parses a process, binds it into the namespace under an
+//!   auto-generated name (`_1`, `_2`, …), and renders the transparency pair; a
+//!   `#define <name>` header (or `#define <name> <expr>` inline) names it instead.
+//! * A line beginning with `#` is a **directive** — a thin wrapper over the
+//!   toolkit (`#explore`, `#check`, `#bisim`, `#typecheck`, …) that renders its
 //!   result and optionally binds it with `-> name`.
-//! * A line beginning with `%%` is a **cell magic**. `%%rune` runs the rest of
+//! * A `#rune` cell runs the rest of
 //!   the cell as an embedded [Rune](https://rune-rs.github.io/) script with a
 //!   curated `stratum` module and the session namespace shared in (see
 //!   [`script`]); its `println!` output and final value flow back as the cell's
@@ -54,17 +55,17 @@ pub use service::{complete, inspect, is_complete, Completions, Inspection, IsCom
 /// class of temporal properties whose verdicts are trustworthy against it.
 ///
 /// Partial-order and symmetry reduction both drop the raw next-time (`EX`)
-/// branching structure, so a reduced LTS must not be `%check`ed with `EX`, and
+/// branching structure, so a reduced LTS must not be `#check`ed with `EX`, and
 /// other verdicts carry a caveat about the preserved fragment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Reduction {
-    /// Full exploration (`%explore`): every property is preserved.
+    /// Full exploration (`#explore`): every property is preserved.
     #[default]
     None,
-    /// Partial-order reduction (`%explore ... por`): preserves reachability /
+    /// Partial-order reduction (`#explore ... por`): preserves reachability /
     /// safety of barbs, not full branching structure.
     Por,
-    /// Symmetry reduction (`%explore ... sym=...`): preserves
+    /// Symmetry reduction (`#explore ... sym=...`): preserves
     /// symmetry-invariant properties.
     Symmetry,
 }
@@ -104,29 +105,29 @@ impl Reduction {
 /// carries a first-class toolkit value so a later cell can name it.
 #[derive(Debug, Clone)]
 pub enum Obj {
-    /// A process defined by a DSL cell or an `%expand` / inline directive.
+    /// A process defined by a DSL cell or an `#expand` / inline directive.
     Proc(Proc),
-    /// A trace LTS produced by `%explore`, tagged with how it was reduced.
+    /// A trace LTS produced by `#explore`, tagged with how it was reduced.
     Lts {
         /// The explored transition system.
         lts: Lts,
         /// The reduction applied during exploration.
         reduction: Reduction,
     },
-    /// An equivalence verdict produced by `%bisim`.
+    /// An equivalence verdict produced by `#bisim`.
     Verdict(Verdict),
-    /// A model-checking result produced by `%check`.
+    /// A model-checking result produced by `#check`.
     Checked(Checked),
     /// A boolean result.
     Bool(bool),
-    /// An integer result (e.g. a metric computed by a `%%rune` script).
+    /// An integer result (e.g. a metric computed by a `#rune` script).
     Int(i64),
     /// Free-form text.
     Text(String),
 }
 
 impl Obj {
-    /// A short human-readable kind name, for error messages and `%help`.
+    /// A short human-readable kind name, for error messages and `#help`.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
@@ -149,7 +150,7 @@ pub struct Namespace {
     /// Named objects, insertion order not tracked (keyed by name).
     objs: HashMap<String, Obj>,
     /// Surface identifier → canonical channel [`Name`], accumulated from every
-    /// DSL parse so `emits(<name>)` and `%typecheck` can resolve a name minted
+    /// DSL parse so `emits(<name>)` and `#typecheck` can resolve a name minted
     /// in an earlier cell.
     names: HashMap<String, Name>,
     /// The alias table from the most recent DSL parse, used for folded
@@ -293,8 +294,8 @@ pub(crate) fn collect_names(p: &Proc, out: &mut Vec<Name>) {
     }
 }
 
-/// The default observation set shared by the `%bisim` directive and the `bisim`
-/// binding in a `%%rune` script: every channel occurring in either process,
+/// The default observation set shared by the `#bisim` directive and the `bisim`
+/// binding in a `#rune` script: every channel occurring in either process,
 /// deduplicated up to structural congruence. Keeping this in one place stops the
 /// directive and the scripted binding from silently drifting out of faithfulness.
 pub(crate) fn default_observations(p: &Proc, q: &Proc) -> Vec<Name> {

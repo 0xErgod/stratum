@@ -13,7 +13,7 @@ stratum = { path = "../stratum" }
 # Windows). Used to render an LTS's DOT into an inline SVG MIME part.
 layout-rs = "0.1"
 
-# Embedded scripting engine for the `%%rune` cell magic: researchers script
+# Embedded scripting engine for the `#rune` cell: researchers script
 # loops / custom algorithms over the real toolkit objects without recompiling.
 # `capture-io` redirects the script's `println` into a buffer we surface as the
 # cell's stdout; a per-instruction budget makes a runaway script error cleanly

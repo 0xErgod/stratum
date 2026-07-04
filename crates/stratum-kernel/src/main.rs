@@ -513,7 +513,7 @@ fn kernel_info_content() -> Value {
             "pygments_lexer": "stratum",
             "codemirror_mode": "text/x-stratum",
         },
-        "banner": "Stratum kernel — a reflective rho-calculus playground for protocol design and analysis. DSL cells define processes; %-directives explore, model-check, and compare them. Try %help.",
+        "banner": "Stratum kernel — a reflective rho-calculus playground for protocol design and analysis. DSL cells define processes; #-directives explore, model-check, and compare them. Try #help.",
         "help_links": [],
     })
 }

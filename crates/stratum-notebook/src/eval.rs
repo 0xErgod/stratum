@@ -1,4 +1,5 @@
-//! The cell evaluator: DSL cells, `%`-directives, and `%%`-magics.
+//! The cell evaluator: DSL cells, `#define` bindings, `#`-directives, and the
+//! `#rune` script cell.
 //!
 //! This is the substrate-agnostic heart of the notebook. [`evaluate`] classifies
 //! a cell, runs it against the session [`Namespace`], and returns a
@@ -65,18 +66,19 @@ pub fn evaluate(cell: &str, ns: &mut Namespace) -> CellOutcome {
     if trimmed.is_empty() {
         return CellOutcome::default();
     }
-    // `%%rune` is a cell magic that runs an embedded script and produces its own
-    // full outcome (captured stdout + a rendered return value + any error), so it
-    // is dispatched before the generic display/err mapping below.
+    // `#rune` is a script cell that runs an embedded Rune program and produces its
+    // own full outcome (captured stdout + a rendered return value + any error), so
+    // it is dispatched before the generic display/err mapping below.
     if let Some(body) = strip_rune_magic(trimmed) {
         return crate::script::run_rune(body, ns);
     }
-    let result = if trimmed.starts_with("%%") {
-        run_magic(trimmed)
-    } else if let Some(rest) = trimmed.strip_prefix('%') {
-        run_directive(rest, ns)
+    // A leading `#` introduces a *meta* line: the first word selects the mode
+    // (`define` to bind this cell's result, a directive name, or `help`).
+    // Everything else is a bare DSL cell that binds to an auto-generated name.
+    let result = if let Some(rest) = trimmed.strip_prefix('#') {
+        run_meta(rest, ns)
     } else {
-        run_dsl(cell, ns)
+        run_dsl(cell, None, ns)
     };
     match result {
         Ok(displays) => CellOutcome {
@@ -89,88 +91,91 @@ pub fn evaluate(cell: &str, ns: &mut Namespace) -> CellOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// Cell magics
+// `#rune` script cells
 // ---------------------------------------------------------------------------
 
-fn run_magic(cell: &str) -> Result<Vec<MimeBundle>, CellError> {
-    let body = cell.strip_prefix("%%").unwrap_or(cell);
-    let (name, _rest) = split_first_word(body);
-    // `%%rune` is intercepted earlier in `evaluate` (it produces a full
-    // `CellOutcome`), so it never reaches here; every other `%%` magic is unknown.
-    Err(CellError::new(
-        "MagicError",
-        format!("unknown cell magic `%%{name}`"),
-    ))
-}
-
-/// If `cell` is a `%%rune` magic, return the script body (everything after the
-/// `%%rune` line); otherwise `None`. Any text on the same line as `%%rune` is
-/// treated as part of the magic line and dropped.
+/// If `cell` is a `#rune` script cell, return the script body (everything after
+/// the `#rune` line); otherwise `None`. Any text on the same line as `#rune` is
+/// treated as part of the meta line and dropped.
 fn strip_rune_magic(cell: &str) -> Option<&str> {
-    let body = cell.strip_prefix("%%")?;
-    let (name, rest) = split_first_word(body);
+    let rest = cell.strip_prefix('#')?;
+    let (name, _) = split_first_word(rest);
     if name != "rune" {
         return None;
     }
-    Some(match rest.find('\n') {
-        Some(i) => &rest[i + 1..],
+    Some(match cell.find('\n') {
+        Some(i) => &cell[i + 1..],
         None => "",
     })
 }
 
 // ---------------------------------------------------------------------------
-// DSL cells
+// Meta lines: `#define`, directives, `#help`
 // ---------------------------------------------------------------------------
 
-fn run_dsl(cell: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
-    let (binding, source) = split_binding(cell);
-    guard_nesting(source)?;
-    let (proc, aliases) = parse_with_aliases(source).map_err(|e| parse_error(source, &e))?;
-    ns.absorb_aliases(&proc, aliases);
-    let bundle = render_proc(&proc, ns.aliases());
-    let name = binding.unwrap_or_else(|| ns.next_auto_name());
-    ns.insert(name, Obj::Proc(proc));
-    Ok(vec![bundle])
-}
-
-/// Split an optional leading `name =` binding off a DSL cell. The surface syntax
-/// contains no `=` token, so a leading `IDENT =` is unambiguously a binding.
-pub(crate) fn split_binding(cell: &str) -> (Option<String>, &str) {
-    if let Some(eq) = cell.find('=') {
-        let lhs = cell[..eq].trim();
-        if is_ident(lhs) {
-            return (Some(lhs.to_string()), &cell[eq + 1..]);
-        }
-    }
-    (None, cell)
-}
-
-// ---------------------------------------------------------------------------
-// Directives
-// ---------------------------------------------------------------------------
-
-fn run_directive(body: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
-    let (name, rest) = split_first_word(body);
-    let rest = rest.trim();
-    match name {
-        "explore" => dir_explore(rest, ns),
-        "expand" => dir_expand(rest, ns),
-        "check" => dir_check(rest, ns),
-        "witness" => dir_witness(rest, ns),
-        "counterexample" => dir_counterexample(rest, ns),
-        "bisim" => dir_bisim(rest, ns),
-        "step" => dir_step(rest, ns),
-        "trace" => dir_trace(rest, ns),
-        "typecheck" => dir_typecheck(rest, ns),
+/// Dispatch a `#`-meta cell. `rest` is the cell body with the leading `#`
+/// already stripped; its first word selects the mode.
+fn run_meta(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
+    let (kw, after) = split_first_word(rest);
+    match kw {
+        "define" => run_define(after, ns),
+        "explore" => dir_explore(after.trim(), ns),
+        "expand" => dir_expand(after.trim(), ns),
+        "check" => dir_check(after.trim(), ns),
+        "witness" => dir_witness(after.trim(), ns),
+        "counterexample" => dir_counterexample(after.trim(), ns),
+        "bisim" => dir_bisim(after.trim(), ns),
+        "step" => dir_step(after.trim(), ns),
+        "trace" => dir_trace(after.trim(), ns),
+        "typecheck" => dir_typecheck(after.trim(), ns),
         "help" => Ok(vec![help_bundle()]),
         other => Err(CellError::new(
             "DirectiveError",
-            format!("unknown directive `%{other}`. Try `%help`."),
+            format!("unknown directive `#{other}`. Try `#help`."),
         )),
     }
 }
 
-/// `%explore <procname|inline DSL> [bound=N] [por] [obs=a,b] [sym=a,b] -> name`
+// ---------------------------------------------------------------------------
+// DSL cells and `#define`
+// ---------------------------------------------------------------------------
+
+/// `#define <name> [<expr>]` — bind this cell's process to `name`. The value is
+/// everything after the name, whether on the same line (`#define e @0!(0)`) or
+/// on the lines below the header (`#define hs` then the Stratum code).
+fn run_define(after: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
+    let (name, source) = split_first_word(after);
+    if !is_ident(name) {
+        return Err(CellError::new(
+            "DefineError",
+            "`#define` needs a name: `#define NAME` then Stratum code on the \
+             following lines, or `#define NAME <expr>` inline"
+                .to_string(),
+        ));
+    }
+    let source = source.trim();
+    if source.is_empty() {
+        return Err(CellError::new(
+            "DefineError",
+            format!("`#define {name}` has no body — put the Stratum code below it, or inline after the name"),
+        ));
+    }
+    run_dsl(source, Some(name.to_string()), ns)
+}
+
+/// Parse a DSL `source` into a process, bind it under `name` (or an
+/// auto-generated name when `None`), and render it.
+fn run_dsl(source: &str, name: Option<String>, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
+    guard_nesting(source)?;
+    let (proc, aliases) = parse_with_aliases(source).map_err(|e| parse_error(source, &e))?;
+    ns.absorb_aliases(&proc, aliases);
+    let bundle = render_proc(&proc, ns.aliases());
+    let name = name.unwrap_or_else(|| ns.next_auto_name());
+    ns.insert(name, Obj::Proc(proc));
+    Ok(vec![bundle])
+}
+
+/// `#explore <procname|inline DSL> [bound=N] [por] [obs=a,b] [sym=a,b] -> name`
 fn dir_explore(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let (pre, bind) = split_arrow(rest);
     let opts = Opts::parse(pre);
@@ -178,7 +183,7 @@ fn dir_explore(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
     if target.is_empty() {
         return arity_err(
             "explore",
-            "%explore <procname|DSL> [bound=N] [por] [sym=a,b] -> name",
+            "#explore <procname|DSL> [bound=N] [por] [sym=a,b] -> name",
         );
     }
     let proc = resolve_proc(target, ns)?;
@@ -204,11 +209,11 @@ fn dir_explore(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
     Ok(vec![bundle])
 }
 
-/// `%expand <procname|inline DSL>` — show the desugared pure core.
+/// `#expand <procname|inline DSL>` — show the desugared pure core.
 fn dir_expand(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let target = rest.trim();
     if target.is_empty() {
-        return arity_err("expand", "%expand <procname|DSL>");
+        return arity_err("expand", "#expand <procname|DSL>");
     }
     let core = if let Some(proc) = ns.get_proc(target) {
         to_source(&canonicalize(proc))
@@ -226,10 +231,10 @@ fn dir_expand(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErr
     }])
 }
 
-/// `%check <formula> on <ltsname>`
+/// `#check <formula> on <ltsname>`
 fn dir_check(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let (formula_src, lts_name) = split_on(rest, " on ")
-        .ok_or_else(|| CellError::new("DirectiveError", "usage: %check <formula> on <ltsname>"))?;
+        .ok_or_else(|| CellError::new("DirectiveError", "usage: #check <formula> on <ltsname>"))?;
     let (lts, reduction) = lookup_lts_binding(lts_name.trim(), ns)?;
     let compiled = compile_formula(formula_src.trim(), ns)?;
     reject_ex_on_reduced(&compiled, reduction)?;
@@ -238,10 +243,10 @@ fn dir_check(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
     Ok(vec![apply_caveat(render_checked(checked), reduction)])
 }
 
-/// `%witness <formula> on <ltsname>`
+/// `#witness <formula> on <ltsname>`
 fn dir_witness(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let (formula_src, lts_name) = split_on(rest, " on ").ok_or_else(|| {
-        CellError::new("DirectiveError", "usage: %witness <formula> on <ltsname>")
+        CellError::new("DirectiveError", "usage: #witness <formula> on <ltsname>")
     })?;
     let (lts, reduction) = lookup_lts_binding(lts_name.trim(), ns)?;
     let compiled = compile_formula(formula_src.trim(), ns)?;
@@ -254,12 +259,12 @@ fn dir_witness(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
     Ok(vec![apply_caveat(bundle, reduction)])
 }
 
-/// `%counterexample <invariant> on <ltsname>`
+/// `#counterexample <invariant> on <ltsname>`
 fn dir_counterexample(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let (formula_src, lts_name) = split_on(rest, " on ").ok_or_else(|| {
         CellError::new(
             "DirectiveError",
-            "usage: %counterexample <invariant> on <ltsname>",
+            "usage: #counterexample <invariant> on <ltsname>",
         )
     })?;
     let (lts, reduction) = lookup_lts_binding(lts_name.trim(), ns)?;
@@ -275,20 +280,20 @@ fn dir_counterexample(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>,
     Ok(vec![apply_caveat(bundle, reduction)])
 }
 
-/// `%bisim <p> <q> [weak] [obs=a,b] [bound=N]`
+/// `#bisim <p> <q> [weak] [obs=a,b] [bound=N]`
 fn dir_bisim(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let opts = Opts::parse(rest);
     let mut words = opts.target.split_whitespace();
     let p_name = words.next();
     let q_name = words.next();
     let (Some(pn), Some(qn)) = (p_name, q_name) else {
-        return arity_err("bisim", "%bisim <p> <q> [weak] [obs=a,b]");
+        return arity_err("bisim", "#bisim <p> <q> [weak] [obs=a,b]");
     };
     if words.next().is_some() {
         return Err(CellError::new(
             "DirectiveError",
-            "`%bisim` takes exactly two processes (extra arguments given). \
-             Usage: %bisim <p> <q> [weak] [obs=a,b]",
+            "`#bisim` takes exactly two processes (extra arguments given). \
+             Usage: #bisim <p> <q> [weak] [obs=a,b]",
         ));
     }
     let p = resolve_proc(pn, ns)?;
@@ -307,11 +312,11 @@ fn dir_bisim(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
     Ok(vec![render_verdict(&verdict)])
 }
 
-/// `%step <procname|inline DSL>` — the one-step reducts.
+/// `#step <procname|inline DSL>` — the one-step reducts.
 fn dir_step(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let target = rest.trim();
     if target.is_empty() {
-        return arity_err("step", "%step <procname|DSL>");
+        return arity_err("step", "#step <procname|DSL>");
     }
     let proc = resolve_proc(target, ns)?;
     let steps = step_labeled(&proc);
@@ -344,11 +349,11 @@ fn dir_step(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError
     }])
 }
 
-/// `%trace <ltsname>` — a sample run from the initial state.
+/// `#trace <ltsname>` — a sample run from the initial state.
 fn dir_trace(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let name = rest.trim();
     if name.is_empty() {
-        return arity_err("trace", "%trace <ltsname>");
+        return arity_err("trace", "#trace <ltsname>");
     }
     let lts = lookup_lts(name, ns)?;
     // Follow the first outgoing transition from each state until a terminal
@@ -374,14 +379,14 @@ fn dir_trace(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
     Ok(vec![render_run("trace", &run, lts)])
 }
 
-/// `%typecheck <procname|inline DSL> [with a:Ty, b:Ty, ...]`
+/// `#typecheck <procname|inline DSL> [with a:Ty, b:Ty, ...]`
 fn dir_typecheck(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
     let (target_src, env_src) = match split_on(rest, " with ") {
         Some((t, e)) => (t.trim(), Some(e.trim())),
         None => (rest.trim(), None),
     };
     if target_src.is_empty() {
-        return arity_err("typecheck", "%typecheck <procname|DSL> [with a:Ty, ...]");
+        return arity_err("typecheck", "#typecheck <procname|DSL> [with a:Ty, ...]");
     }
     let proc = resolve_proc(target_src, ns)?;
     let env = match env_src {
@@ -431,7 +436,7 @@ fn lookup_lts_binding<'a>(
         None => Err(CellError::new(
             "NameError",
             format!(
-                "no LTS named `{name}` in this session (bind one with `%explore ... -> {name}`)"
+                "no LTS named `{name}` in this session (bind one with `#explore ... -> {name}`)"
             ),
         )),
     }
@@ -450,7 +455,7 @@ fn reject_ex_on_reduced(
             format!(
                 "this LTS is {} — the `EX` (next-time) modality is not preserved \
                  under reduction, so the verdict would be unsound. Re-explore with \
-                 plain `%explore` (no `por` / `sym=`) to check next-time properties.",
+                 plain `#explore` (no `por` / `sym=`) to check next-time properties.",
                 reduction.label()
             ),
         ))
@@ -643,7 +648,7 @@ pub(crate) fn is_ident(s: &str) -> bool {
 fn arity_err(name: &str, usage: &str) -> Result<Vec<MimeBundle>, CellError> {
     Err(CellError::new(
         "DirectiveError",
-        format!("`%{name}` — usage: {usage}"),
+        format!("`#{name}` — usage: {usage}"),
     ))
 }
 
@@ -664,27 +669,31 @@ fn caret_line(_line: &str, column: usize) -> String {
     format!("{}^", " ".repeat(pad))
 }
 
-/// The `%help` display listing the directive vocabulary.
+/// The `#help` display listing the notebook vocabulary.
 fn help_bundle() -> MimeBundle {
     let plain = "\
-Stratum notebook directives:
-  DSL cell         define a process; optional leading `name =` binding
-  %explore <p> [bound=N] [por] [obs=a,b] [sym=a,b] -> lts   build the trace LTS
-  %expand <p>                                    show the desugared pure core
-  %check <formula> on <lts>                      model-check (holds + exact)
-  %witness <formula> on <lts>                    a run reaching the goal
-  %counterexample <invariant> on <lts>           a run violating the invariant
-  %bisim <p> <q> [weak] [obs=a,b]                barbed (bi)simulation verdict
-  %step <p>                                       one-step reducts
-  %trace <lts>                                    a sample run
-  %typecheck <p> [with a:Ty, b:Ty]               channel-sort typecheck
-  %%rune <newline> <script>                      run an embedded Rune script
-  %help                                           this list
+Stratum notebook cells:
+  DSL cell         Stratum code; binds to an auto name (`_1`, `_2`, ...)
+  #define <name>   bind this cell's process to <name> (code below, or inline)
+  #explore <p> [bound=N] [por] [obs=a,b] [sym=a,b] -> lts   build the trace LTS
+  #expand <p>                                    show the desugared pure core
+  #check <formula> on <lts>                      model-check (holds + exact)
+  #witness <formula> on <lts>                    a run reaching the goal
+  #counterexample <invariant> on <lts>           a run violating the invariant
+  #bisim <p> <q> [weak] [obs=a,b]                barbed (bi)simulation verdict
+  #step <p>                                       one-step reducts
+  #trace <lts>                                    a sample run
+  #typecheck <p> [with a:Ty, b:Ty]               channel-sort typecheck
+  #rune <newline> <script>                       run an embedded Rune script
+  #help                                           this list
 
-%%rune: the rest of the cell is a Rune script (an implicit `pub fn main()`) with
+#define: `#define hs` on its own line names the process built from the Stratum
+code on the lines below; `#define e @0!(0)` binds an inline one-liner.
+
+#rune: the rest of the cell is a Rune script (an implicit `pub fn main()`) with
 a curated `stratum` module bound in and this session's bindings shared. Free fns:
 stratum::parse(src) -> proc; stratum::explore(p, bound) / explore_por / _symmetric
--> lts; stratum::check(lts, formula) -> bool (same formula language as %check);
+-> lts; stratum::check(lts, formula) -> bool (same formula language as #check);
 stratum::witness / counterexample(lts, f) -> [state indices]; stratum::bisim(p, q,
 weak) -> verdict; stratum::get(name) / set(name, value) read / write bindings.
 `println!(...)` is captured as the cell's stdout; the final expression is the
@@ -696,9 +705,9 @@ Formula fragment: EF/AG/AF/EG/EX φ, φ & ψ, φ | ψ, !φ, ( ), and the atomic
 proposition emits(<name>) — a top-level OUTPUT barb on the named channel.
 Types: Nil, Proc, Chan(<Ty>).
 
-Reduced LTSs (`%explore ... por` / `sym=...`) preserve only a fragment of
-the logic: `%check`/`%witness`/`%counterexample` REJECT the `EX` (next-time)
-modality on them, and other verdicts carry a caveat. Use plain `%explore`
+Reduced LTSs (`#explore ... por` / `sym=...`) preserve only a fragment of
+the logic: `#check`/`#witness`/`#counterexample` REJECT the `EX` (next-time)
+modality on them, and other verdicts carry a caveat. Use plain `#explore`
 (no por/sym) to check next-time properties.";
     let html = format!(
         "<pre class=\"stratum-help\">{}</pre>",

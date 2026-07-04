@@ -1,4 +1,4 @@
-//! Integration tests for the `%%rune` cell magic: scripting over the real
+//! Integration tests for the `#rune` cell magic: scripting over the real
 //! toolkit objects, sharing the session namespace across cells, faithfulness
 //! against the equivalent directive, and clean handling of every failure mode
 //! (compile error, runtime error, and a runaway loop hitting the budget).
@@ -30,7 +30,7 @@ fn ok(out: CellOutcome) -> CellOutcome {
 fn rune_parse_explore_and_print() {
     let mut ns = Namespace::new();
     let out = ok(evaluate(
-        "%%rune\n\
+        "#rune\n\
          let p = stratum::parse(\"new a\\na!(0)\");\n\
          let lts = stratum::explore(p, 100);\n\
          println!(\"states={}\", lts.num_states());\n",
@@ -53,13 +53,13 @@ fn rune_shares_namespace_across_cells() {
     let mut ns = Namespace::new();
 
     // Cell 1 (DSL): bind a process `mp`.
-    ok(evaluate("mp = new a\n\na!(0) | a(x).0", &mut ns));
+    ok(evaluate("#define mp\nnew a\n\na!(0) | a(x).0", &mut ns));
     assert!(matches!(ns.get("mp"), Some(Obj::Proc(_))));
 
     // Cell 2 (rune): read `mp`, explore it, count normal-form states, and write
     // the count back into the session.
     let out = ok(evaluate(
-        "%%rune\n\
+        "#rune\n\
          let p = stratum::get(\"mp\");\n\
          let lts = stratum::explore(p, 100);\n\
          let n = 0;\n\
@@ -81,7 +81,7 @@ fn rune_shares_namespace_across_cells() {
 
     // Cell 3 (rune): a LATER cell reads the value written by cell 2.
     let out = ok(evaluate(
-        "%%rune\n\
+        "#rune\n\
          let n = stratum::get(\"nf_count\");\n\
          println!(\"read {}\", n);\n",
         &mut ns,
@@ -94,7 +94,7 @@ fn rune_shares_namespace_across_cells() {
 }
 
 // ---------------------------------------------------------------------------
-// Faithfulness: `stratum::check` from a script agrees with the `%check`
+// Faithfulness: `stratum::check` from a script agrees with the `#check`
 // directive on the same LTS + formula.
 // ---------------------------------------------------------------------------
 
@@ -103,16 +103,16 @@ fn rune_check_agrees_with_directive() {
     for (formula, _label) in [("EF emits(ack)", "holds"), ("AG emits(req)", "fails")] {
         let mut ns = Namespace::new();
         ok(evaluate(HANDSHAKE, &mut ns));
-        ok(evaluate("%explore _1 -> lts", &mut ns));
+        ok(evaluate("#explore _1 -> lts", &mut ns));
 
         // Directive verdict.
-        let directive = ok(evaluate(&format!("%check {formula} on lts"), &mut ns));
+        let directive = ok(evaluate(&format!("#check {formula} on lts"), &mut ns));
         let directive_holds = directive.displays[0].text_plain.starts_with("Holds");
 
         // Scripted verdict against the same binding + formula.
         let scripted = ok(evaluate(
             &format!(
-                "%%rune\n\
+                "#rune\n\
                  let lts = stratum::get(\"lts\");\n\
                  println!(\"{{}}\", stratum::check(lts, \"{formula}\"));\n"
             ),
@@ -130,14 +130,14 @@ fn rune_check_agrees_with_directive() {
 
 // ---------------------------------------------------------------------------
 // Return-value rendering: a script whose final expression is an ScLts yields an
-// SVG display, just like the `%explore` directive.
+// SVG display, just like the `#explore` directive.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn rune_return_value_renders_lts_svg() {
     let mut ns = Namespace::new();
     let out = ok(evaluate(
-        "%%rune\n\
+        "#rune\n\
          stratum::explore(stratum::parse(\"new a\\na!(0) | a(x).0\"), 100)\n",
         &mut ns,
     ));
@@ -156,7 +156,7 @@ fn rune_return_value_renders_lts_svg() {
 fn rune_return_verdict_renders_html() {
     let mut ns = Namespace::new();
     let out = ok(evaluate(
-        "%%rune\n\
+        "#rune\n\
          let p = stratum::parse(\"new a\\na!(0)\");\n\
          stratum::bisim(p, p, false)\n",
         &mut ns,
@@ -177,7 +177,7 @@ fn rune_return_verdict_renders_html() {
 #[test]
 fn rune_compile_error_is_clean() {
     let mut ns = Namespace::new();
-    let out = evaluate("%%rune\n let x = ;\n", &mut ns);
+    let out = evaluate("#rune\n let x = ;\n", &mut ns);
     let err = out
         .error
         .expect("a syntax error must surface as a CellError");
@@ -189,7 +189,7 @@ fn rune_compile_error_is_clean() {
 fn rune_missing_name_is_clean_runtime_error() {
     let mut ns = Namespace::new();
     let out = evaluate(
-        "%%rune\n let x = stratum::get(\"does_not_exist\");\n",
+        "#rune\n let x = stratum::get(\"does_not_exist\");\n",
         &mut ns,
     );
     let err = out
@@ -207,9 +207,9 @@ fn rune_missing_name_is_clean_runtime_error() {
 fn rune_type_mismatch_is_clean_runtime_error() {
     let mut ns = Namespace::new();
     // Bind a *process* named `mp`, then misuse it as an LTS from a script.
-    ok(evaluate("mp = new a\n\na!(0)", &mut ns));
+    ok(evaluate("#define mp\nnew a\n\na!(0)", &mut ns));
     let out = evaluate(
-        "%%rune\n let p = stratum::get(\"mp\");\n let n = p.num_states();\n",
+        "#rune\n let p = stratum::get(\"mp\");\n let n = p.num_states();\n",
         &mut ns,
     );
     let err = out
@@ -225,7 +225,7 @@ fn rune_runaway_loop_hits_budget_without_hanging() {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let mut ns = Namespace::new();
-        let out = evaluate("%%rune\n let i = 0;\n while true { i += 1; }\n", &mut ns);
+        let out = evaluate("#rune\n let i = 0;\n while true { i += 1; }\n", &mut ns);
         let _ = tx.send(out);
     });
 

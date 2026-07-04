@@ -65,7 +65,7 @@ pub enum IsComplete {
     Invalid,
 }
 
-/// The notebook directive names, without their leading `%`.
+/// The notebook directive names, without their leading `#`.
 const DIRECTIVES: &[&str] = &[
     "explore",
     "expand",
@@ -79,11 +79,28 @@ const DIRECTIVES: &[&str] = &[
     "help",
 ];
 
+/// Every `#`-meta keyword offered while completing a meta line: `define`, the
+/// directives, and the `rune` script cell.
+const META_KEYWORDS: &[&str] = &[
+    "define",
+    "explore",
+    "expand",
+    "check",
+    "witness",
+    "counterexample",
+    "bisim",
+    "step",
+    "trace",
+    "typecheck",
+    "rune",
+    "help",
+];
+
 /// The DSL surface keywords (as recognised by the `stratum-syntax` lexer).
 const KEYWORDS: &[&str] = &["def", "new", "nil"];
 
-/// The formula sub-language vocabulary offered inside `%check` / `%witness` /
-/// `%counterexample`.
+/// The formula sub-language vocabulary offered inside `#check` / `#witness` /
+/// `#counterexample`.
 const FORMULA_VOCAB: &[&str] = &["EF", "EG", "AF", "AG", "EX", "emits("];
 
 /// Directive keyword-argument tokens offered after a directive name.
@@ -106,9 +123,10 @@ fn is_word(c: char) -> bool {
 ///
 /// The candidate set depends on where the cursor sits:
 ///
-/// * **Directive line** (`%…`): the directive *name* while still typing it, then
-///   keyword args (`bound=`, `por`, …) and bound namespace names.
-/// * **Formula** (inside `%check` / `%witness` / `%counterexample`): the temporal
+/// * **Meta line** (`#…`): the meta keyword (`define`, a directive, `rune`, …)
+///   while still typing it, then a directive's keyword args (`bound=`, `por`, …)
+///   and bound namespace names.
+/// * **Formula** (inside `#check` / `#witness` / `#counterexample`): the temporal
 ///   vocabulary (`EF EG AF AG EX`, `emits(`) — and, inside `emits(…)`, the
 ///   resolvable channel names in scope.
 /// * **DSL cell**: the keywords (`def`/`new`/`nil`), the stdlib macro names, the
@@ -136,32 +154,46 @@ pub fn complete(code: &str, cursor_pos: usize, ns: &Namespace) -> Completions {
     let line_before: String = chars[line_start..cursor].iter().collect();
     let line_trim = line_before.trim_start();
 
-    // Directive line: `%…` (but not a `%%`-magic, which we do not complete).
-    if let Some(after) = line_trim.strip_prefix('%') {
-        if !after.starts_with('%') {
-            // Still typing the directive name itself (no whitespace yet)?
-            if !line_trim[1..].contains(char::is_whitespace) {
-                let matches = filtered(
-                    DIRECTIVES.iter().map(|d| format!("%{d}")),
-                    line_trim, // includes the leading `%`
-                );
-                // The replaced token starts at the `%`.
-                let pct_start =
-                    line_start + (line_before.chars().count() - line_trim.chars().count());
+    // Meta line: `#…`. The first word is the mode; `#define`'s value and `#rune`'s
+    // body are ordinary DSL / script, so they fall through to DSL completion.
+    if let Some(after) = line_trim.strip_prefix('#') {
+        // Still typing the meta keyword itself (no whitespace yet)?
+        if !line_trim[1..].contains(char::is_whitespace) {
+            let matches = filtered(
+                META_KEYWORDS.iter().map(|d| format!("#{d}")),
+                line_trim, // includes the leading `#`
+            );
+            // The replaced token starts at the `#`.
+            let hash_start =
+                line_start + (line_before.chars().count() - line_trim.chars().count());
+            return Completions {
+                matches,
+                cursor_start: hash_start,
+                cursor_end: cursor,
+            };
+        }
+        // Past the keyword.
+        let kw = after.split_whitespace().next().unwrap_or("");
+        match kw {
+            // `#define`'s value is DSL — fall through to the DSL completion below.
+            "define" => {}
+            // `#rune`'s body is a Rune script — we do not complete it.
+            "rune" => {
                 return Completions {
-                    matches,
-                    cursor_start: pct_start,
+                    matches: Vec::new(),
+                    cursor_start: tok_start,
                     cursor_end: cursor,
                 };
             }
-            // In the directive arguments.
-            let dir = after.split_whitespace().next().unwrap_or("");
-            let cands = directive_arg_candidates(dir, &line_before, ns);
-            return Completions {
-                matches: filtered(cands.into_iter(), &prefix),
-                cursor_start: tok_start,
-                cursor_end: cursor,
-            };
+            // A directive: its keyword args and bound namespace names.
+            _ => {
+                let cands = directive_arg_candidates(kw, &line_before, ns);
+                return Completions {
+                    matches: filtered(cands.into_iter(), &prefix),
+                    cursor_start: tok_start,
+                    cursor_end: cursor,
+                };
+            }
         }
     }
 
@@ -383,7 +415,7 @@ fn cell_binders(code: &str) -> Vec<(String, usize)> {
 /// is worth surfacing.
 ///
 /// Resolution order for the token: a bound **namespace name** (summarise its
-/// [`Obj`]), a **directive** (`%name` or a directive word on a `%`-line), a
+/// [`Obj`]), a **directive** (`#name` or a directive word on a `#`-line), a
 /// **stdlib macro** (its definition), a **keyword**, or a **formula modality**.
 ///
 /// `cursor_pos` is a **codepoint** offset (see the [module docs](self)).
@@ -406,9 +438,9 @@ pub fn inspect(code: &str, cursor_pos: usize, ns: &Namespace) -> Option<Inspecti
         return None;
     }
 
-    // Is the token the name of a `%`-directive (either `%token` or a bare
-    // directive word on a line that starts with `%`)?
-    let preceded_by_pct = start > 0 && chars[start - 1] == '%';
+    // Is the token the name of a `#`-directive (either `#token` or a bare
+    // directive word on a line that starts with `#`)?
+    let preceded_by_hash = start > 0 && chars[start - 1] == '#';
     let line_start = chars[..start]
         .iter()
         .rposition(|&c| c == '\n')
@@ -417,7 +449,7 @@ pub fn inspect(code: &str, cursor_pos: usize, ns: &Namespace) -> Option<Inspecti
         .iter()
         .collect::<String>()
         .trim_start()
-        .starts_with('%');
+        .starts_with('#');
 
     // 1. A bound namespace object always wins.
     if let Some(obj) = ns.get(&token) {
@@ -425,7 +457,7 @@ pub fn inspect(code: &str, cursor_pos: usize, ns: &Namespace) -> Option<Inspecti
     }
 
     // 2. A directive.
-    if (preceded_by_pct || on_directive_line) && DIRECTIVES.contains(&token.as_str()) {
+    if (preceded_by_hash || on_directive_line) && DIRECTIVES.contains(&token.as_str()) {
         return Some(directive_doc(&token));
     }
 
@@ -505,53 +537,53 @@ fn inspect_obj(name: &str, obj: &Obj, ns: &Namespace) -> Inspection {
     }
 }
 
-/// A concise doc for a `%`-directive.
+/// A concise doc for a `#`-directive.
 fn directive_doc(name: &str) -> Inspection {
     let body = match name {
         "explore" => {
-            "%explore <p> [bound=N] [por] [obs=a,b] [sym=a,b] -> lts\n\
+            "#explore <p> [bound=N] [por] [obs=a,b] [sym=a,b] -> lts\n\
              Build the bounded trace LTS of a process (or inline DSL). `por` / `sym=` \
              apply partial-order / symmetry reduction; `-> name` binds the result."
         }
         "expand" => {
-            "%expand <p>\n\
+            "#expand <p>\n\
              Show the desugared pure core of a process (all `def`/`new`/macro sugar removed)."
         }
         "check" => {
-            "%check <formula> on <lts>\n\
+            "#check <formula> on <lts>\n\
              Model-check a temporal formula against a bound LTS (holds + exactness)."
         }
         "witness" => {
-            "%witness <formula> on <lts>\n\
+            "#witness <formula> on <lts>\n\
              Exhibit a run of the LTS that reaches the formula's goal."
         }
         "counterexample" => {
-            "%counterexample <invariant> on <lts>\n\
+            "#counterexample <invariant> on <lts>\n\
              Exhibit a run of the LTS that violates the invariant."
         }
         "bisim" => {
-            "%bisim <p> <q> [weak] [obs=a,b]\n\
+            "#bisim <p> <q> [weak] [obs=a,b]\n\
              Decide barbed (bi)simulation of two processes over an observation set."
         }
         "step" => {
-            "%step <p>\n\
+            "#step <p>\n\
              List the one-step reducts of a process."
         }
         "trace" => {
-            "%trace <lts>\n\
+            "#trace <lts>\n\
              Follow a sample run from the LTS's initial state."
         }
         "typecheck" => {
-            "%typecheck <p> [with a:Ty, b:Ty]\n\
+            "#typecheck <p> [with a:Ty, b:Ty]\n\
              Channel-sort typecheck a process under an optional environment."
         }
         "help" => {
-            "%help\n\
-             List the notebook directive vocabulary."
+            "#help\n\
+             List the notebook cell vocabulary."
         }
         _ => "unknown directive",
     };
-    let text = format!("directive `%{name}`\n{body}");
+    let text = format!("directive `#{name}`\n{body}");
     plain_html(text)
 }
 
@@ -628,25 +660,51 @@ fn plain_html(text: String) -> Inspection {
 // is_complete
 // ---------------------------------------------------------------------------
 
+/// Split off the first whitespace-delimited word, returning `(word, rest)` with
+/// `rest` left-trimmed. Mirrors the evaluator's own `split_first_word`.
+fn split_meta_word(s: &str) -> (&str, &str) {
+    let s = s.trim_start();
+    match s.find(char::is_whitespace) {
+        Some(i) => (&s[..i], s[i..].trim_start()),
+        None => (s, ""),
+    }
+}
+
 /// Classify whether a cell is ready to execute.
 ///
 /// Uses the toolkit parser: a cell that parses is [`IsComplete::Complete`]; a
 /// well-formed prefix that hits an unexpected end-of-input / unclosed bracket is
 /// [`IsComplete::Incomplete`] (with a small suggested indent); any other syntax
-/// error is [`IsComplete::Invalid`]. Directives / magics are treated as
-/// single-shot [`IsComplete::Complete`] lines. The [`guard_nesting`] guard is
-/// reused so a pathologically nested cell cannot overflow the parser stack.
+/// error is [`IsComplete::Invalid`]. Directives and the `#rune` script cell are
+/// treated as single-shot [`IsComplete::Complete`] lines; a `#define` cell is
+/// classified by its DSL *body* so a half-typed process still reads as
+/// incomplete. The [`guard_nesting`] guard is reused so a pathologically nested
+/// cell cannot overflow the parser stack.
 #[must_use]
 pub fn is_complete(code: &str) -> IsComplete {
     let trimmed = code.trim();
-    // Empty or directive/magic cells are executed as-is.
-    if trimmed.is_empty() || trimmed.starts_with('%') {
+    if trimmed.is_empty() {
         return IsComplete::Complete;
     }
 
-    // A DSL cell: strip an optional leading `name =` binding, exactly as the
-    // evaluator does, then try to parse the process.
-    let (_binding, source) = crate::eval::split_binding(code);
+    // A `#`-meta cell: `#define`'s value is DSL (classify by its body); every
+    // other meta cell (directives, `#rune`) is executed as-is.
+    let source = if let Some(rest) = trimmed.strip_prefix('#') {
+        let (kw, after) = split_meta_word(rest);
+        if kw == "define" {
+            let (_name, body) = split_meta_word(after);
+            if body.trim().is_empty() {
+                // An empty `#define` is submittable — the evaluator reports it.
+                return IsComplete::Complete;
+            }
+            body
+        } else {
+            return IsComplete::Complete;
+        }
+    } else {
+        code
+    };
+
     if guard_nesting(source).is_err() {
         // Too deeply nested to hand to the parser — a hard reject, not a prefix.
         return IsComplete::Invalid;
@@ -681,8 +739,8 @@ mod tests {
     /// bound LTS `g`.
     fn seeded() -> Namespace {
         let mut ns = Namespace::new();
-        let _ = evaluate("srv = new a\na!(0)", &mut ns);
-        let _ = evaluate("%explore srv -> g", &mut ns);
+        let _ = evaluate("#define srv\nnew a\na!(0)", &mut ns);
+        let _ = evaluate("#explore srv -> g", &mut ns);
         ns
     }
 
@@ -691,10 +749,10 @@ mod tests {
     #[test]
     fn complete_directive_names() {
         let ns = Namespace::new();
-        let c = complete("%exp", 4, &ns);
-        assert!(c.matches.contains(&"%explore".to_string()));
-        assert!(c.matches.contains(&"%expand".to_string()));
-        // The replaced token spans the `%`.
+        let c = complete("#exp", 4, &ns);
+        assert!(c.matches.contains(&"#explore".to_string()));
+        assert!(c.matches.contains(&"#expand".to_string()));
+        // The replaced token spans the `#`.
         assert_eq!(c.cursor_start, 0);
         assert_eq!(c.cursor_end, 4);
     }
@@ -703,7 +761,7 @@ mod tests {
     fn complete_directive_args_include_namespace_names() {
         let ns = seeded();
         // After the directive name, keyword args + bound namespace names.
-        let c = complete("%explore ", 9, &ns);
+        let c = complete("#explore ", 9, &ns);
         assert!(c.matches.iter().any(|m| m == "bound="));
         assert!(c.matches.contains(&"srv".to_string()));
         assert!(c.matches.contains(&"g".to_string()));
@@ -714,7 +772,7 @@ mod tests {
     #[test]
     fn complete_formula_vocab() {
         let ns = seeded();
-        let c = complete("%check E", 8, &ns);
+        let c = complete("#check E", 8, &ns);
         assert!(c.matches.contains(&"EF".to_string()));
         assert!(c.matches.contains(&"EG".to_string()));
         assert!(c.matches.contains(&"EX".to_string()));
@@ -725,7 +783,7 @@ mod tests {
     fn complete_inside_emits_offers_channels() {
         let ns = seeded();
         // Inside an unclosed `emits(`, only channel names are resolvable.
-        let c = complete("%check emits(", 13, &ns);
+        let c = complete("#check emits(", 13, &ns);
         assert!(c.matches.contains(&"a".to_string()));
         assert!(!c.matches.iter().any(|m| m == "EF"));
     }
@@ -873,8 +931,8 @@ mod tests {
     #[test]
     fn inspect_directive() {
         let ns = Namespace::new();
-        let i = inspect("%explore", 3, &ns).expect("directive doc");
-        assert!(i.text_plain.contains("directive `%explore`"));
+        let i = inspect("#explore", 3, &ns).expect("directive doc");
+        assert!(i.text_plain.contains("directive `#explore`"));
     }
 
     #[test]
@@ -900,7 +958,7 @@ mod tests {
         assert_eq!(is_complete("new a\na!(0)"), IsComplete::Complete);
         assert_eq!(is_complete("@0!(0)"), IsComplete::Complete);
         assert_eq!(is_complete(""), IsComplete::Complete);
-        assert_eq!(is_complete("%explore srv"), IsComplete::Complete);
+        assert_eq!(is_complete("#explore srv"), IsComplete::Complete);
     }
 
     #[test]
@@ -919,7 +977,7 @@ mod tests {
     #[test]
     fn is_complete_invalid() {
         assert_eq!(is_complete(")"), IsComplete::Invalid);
-        assert_eq!(is_complete("#$%^ garbage"), IsComplete::Invalid);
+        assert_eq!(is_complete("$%^ garbage"), IsComplete::Invalid);
     }
 
     #[test]

@@ -1,9 +1,9 @@
-//! The `%%rune` cell magic: an embedded [Rune] scripting engine with a curated,
+//! The `#rune` cell: an embedded [Rune] scripting engine with a curated,
 //! faithful `stratum` module bound in and the session [`Namespace`] shared.
 //!
 //! [Rune]: https://rune-rs.github.io/
 //!
-//! A `%%rune` cell lets a researcher script loops and custom algorithms over the
+//! A `#rune` cell lets a researcher script loops and custom algorithms over the
 //! *real* toolkit objects — the same [`stratum::core::Proc`] /
 //! [`stratum::lts::Lts`] / [`stratum::equiv::Verdict`] values created in earlier
 //! DSL / directive cells — without recompiling the kernel. Every function in the
@@ -33,7 +33,7 @@
 //!   `explore_symmetric(p, bound, [chans])` — build the trace LTS. Channel names
 //!   in the lists are resolved against the session namespace.
 //! * `check(lts, formula) -> bool` (alias `holds`) — model-check, using the very
-//!   same formula sub-language as the `%check` directive.
+//!   same formula sub-language as the `#check` directive.
 //! * `witness(lts, formula) -> Vec<i64>` / `counterexample(lts, inv) -> Vec<i64>`
 //!   — the state indices along a witnessing / violating run (empty if none).
 //! * `bisim(p, q, weak) -> ScVerdict` — barbed (bi)simulation verdict.
@@ -79,7 +79,7 @@ use crate::formula::parse_formula;
 use crate::render::{render_lts, render_proc, render_verdict, MimeBundle};
 use crate::{CellError, CellOutcome, Namespace, Obj, Reduction};
 
-/// The default per-instruction execution budget for a `%%rune` cell.
+/// The default per-instruction execution budget for a `#rune` cell.
 ///
 /// Budgeting in Rune is per-VM-instruction (see [`rune::runtime::budget`]); a
 /// script that exhausts this cap halts with a clean error rather than hanging
@@ -89,7 +89,7 @@ use crate::{CellError, CellOutcome, Namespace, Obj, Reduction};
 pub const RUNE_BUDGET: usize = 10_000_000;
 
 /// The default bounded-exploration state cap for scripted `bisim` (mirrors the
-/// `%bisim` directive default so a scripted verdict matches the directive's).
+/// `#bisim` directive default so a scripted verdict matches the directive's).
 const DEFAULT_SCRIPT_BOUND: usize = 1000;
 
 /// A shared handle to the session namespace, captured by the `get` / `set`
@@ -481,7 +481,7 @@ fn verdict_string(v: &Verdict) -> String {
 // Engine entry point.
 // ---------------------------------------------------------------------------
 
-/// Run a `%%rune` cell body against the session namespace, returning the cell's
+/// Run a `#rune` cell body against the session namespace, returning the cell's
 /// captured stdout, an optional rendered return value, and any error — all as a
 /// [`CellOutcome`].
 ///
@@ -641,7 +641,7 @@ fn run_inner(
     }
 }
 
-/// Build the Rune [`Context`] for a `%%rune` cell.
+/// Build the Rune [`Context`] for a `#rune` cell.
 fn build_context(shared: &SharedNs, io: &CaptureIo) -> Result<Context, ContextError> {
     // `with_config(false)` installs the default modules but omits real stdio, so
     // the capture-io module owns `print` / `println`.

@@ -30,9 +30,10 @@ fn ok_display(out: &CellOutcome) -> &stratum_notebook::MimeBundle {
 fn namespace_binds_and_looks_up_across_cells() {
     let mut ns = Namespace::new();
 
-    // A named DSL binding persists.
+    // A `#define` binding persists.
     let out = eval(
-        "p = new a
+        "#define p
+new a
 
 a!(0)",
         &mut ns,
@@ -52,9 +53,29 @@ b!(0)",
     assert!(matches!(ns.get("_1"), Some(Obj::Proc(_))));
 
     // A directive can consume a name bound in an earlier cell.
-    let out = eval("%explore p -> g", &mut ns);
+    let out = eval("#explore p -> g", &mut ns);
     ok_display(&out);
     assert!(matches!(ns.get("g"), Some(Obj::Lts { .. })));
+}
+
+#[test]
+fn define_inline_and_header_forms() {
+    let mut ns = Namespace::new();
+
+    // Inline form: `#define <name> <expr>` on one line.
+    let out = eval("#define emitter @0!(0)", &mut ns);
+    ok_display(&out);
+    assert!(matches!(ns.get("emitter"), Some(Obj::Proc(_))));
+
+    // Header form: `#define <name>` then the Stratum code below.
+    let out = eval("#define quiet\n@0(x).0", &mut ns);
+    ok_display(&out);
+    assert!(matches!(ns.get("quiet"), Some(Obj::Proc(_))));
+
+    // A `#define` with no body is a clear error, not a parse crash.
+    let out = eval("#define lonely", &mut ns);
+    let err = out.error.expect("empty define must error");
+    assert_eq!(err.ename, "DefineError");
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +97,7 @@ fn dsl_render_shows_transparency_pair() {
 fn lts_renders_valid_svg() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
-    let out = eval("%explore _1 -> lts", &mut ns);
+    let out = eval("#explore _1 -> lts", &mut ns);
     let b = ok_display(&out);
     let svg = b.image_svg.as_ref().expect("LTS renders image/svg+xml");
     assert!(
@@ -93,18 +114,20 @@ fn lts_renders_valid_svg() {
 fn verdict_renders_html() {
     let mut ns = Namespace::new();
     eval(
-        "p = new a
+        "#define p
+new a
 
 a!(0)",
         &mut ns,
     );
     eval(
-        "q = new a
+        "#define q
+new a
 
 a!(0)",
         &mut ns,
     );
-    let out = eval("%bisim p q", &mut ns);
+    let out = eval("#bisim p q", &mut ns);
     let b = ok_display(&out);
     let html = b.text_html.as_ref().expect("verdict renders html");
     assert!(
@@ -119,8 +142,8 @@ a!(0)",
 fn trace_renders_step_table() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
-    eval("%explore _1 -> lts", &mut ns);
-    let out = eval("%trace lts", &mut ns);
+    eval("#explore _1 -> lts", &mut ns);
+    let out = eval("#trace lts", &mut ns);
     let b = ok_display(&out);
     let html = b.text_html.as_ref().expect("trace renders html table");
     assert!(html.contains("<table"), "html: {html}");
@@ -133,7 +156,7 @@ fn expand_shows_core() {
     let mut ns = Namespace::new();
     // Inline expand of surface DSL.
     let out = eval(
-        "%expand new a
+        "#expand new a
 
 a!(0)",
         &mut ns,
@@ -142,25 +165,26 @@ a!(0)",
     assert!(!b.text_plain.is_empty());
     // Named expand of a bound proc.
     eval(
-        "p = new a
+        "#define p
+new a
 
 a!(0)",
         &mut ns,
     );
-    let out = eval("%expand p", &mut ns);
+    let out = eval("#expand p", &mut ns);
     let b = ok_display(&out);
     assert!(b.text_html.as_ref().unwrap().contains("core"));
 }
 
 // ---------------------------------------------------------------------------
-// Formula sub-language (via %check and directly)
+// Formula sub-language (via #check and directly)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn formula_fragment_parses_and_checks() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
-    eval("%explore _1 -> lts", &mut ns);
+    eval("#explore _1 -> lts", &mut ns);
 
     // Every modality + connective + emits atom, on a real LTS.
     for f in [
@@ -172,7 +196,7 @@ fn formula_fragment_parses_and_checks() {
         "EG emits(req)",
         "EX emits(ack)",
     ] {
-        let out = eval(&format!("%check {f} on lts"), &mut ns);
+        let out = eval(&format!("#check {f} on lts"), &mut ns);
         assert!(
             out.error.is_none(),
             "formula `{f}` errored: {:?}",
@@ -185,15 +209,15 @@ fn formula_fragment_parses_and_checks() {
 fn malformed_formula_is_a_clear_error() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
-    eval("%explore _1 -> lts", &mut ns);
+    eval("#explore _1 -> lts", &mut ns);
 
     // Missing operand.
-    let out = eval("%check EF & emits(ack) on lts", &mut ns);
+    let out = eval("#check EF & emits(ack) on lts", &mut ns);
     let err = out.error.expect("malformed formula must error");
     assert_eq!(err.ename, "FormulaError");
 
     // Unknown channel in emits(...).
-    let out = eval("%check EF emits(nope) on lts", &mut ns);
+    let out = eval("#check EF emits(nope) on lts", &mut ns);
     let err = out.error.expect("unknown channel must error");
     assert_eq!(err.ename, "FormulaError");
     assert!(err.evalue.contains("nope"), "evalue: {}", err.evalue);
@@ -207,7 +231,7 @@ fn malformed_formula_is_a_clear_error() {
 fn step_shows_reducts() {
     let mut ns = Namespace::new();
     let out = eval(
-        "%step new a
+        "#step new a
 
 a!(0) | a(x).0",
         &mut ns,
@@ -223,7 +247,7 @@ fn typecheck_ok_and_error() {
     eval(HANDSHAKE, &mut ns);
 
     // Well-typed: both channels carry Nil.
-    let out = eval("%typecheck _1 with req:Nil, ack:Nil", &mut ns);
+    let out = eval("#typecheck _1 with req:Nil, ack:Nil", &mut ns);
     let b = ok_display(&out);
     assert!(
         b.text_plain.contains("well-typed"),
@@ -233,7 +257,7 @@ fn typecheck_ok_and_error() {
 
     // Default empty environment still checks (unsorted channel is an error we
     // surface via the renderer, not a cell error).
-    let out = eval("%typecheck _1", &mut ns);
+    let out = eval("#typecheck _1", &mut ns);
     ok_display(&out);
 }
 
@@ -241,13 +265,13 @@ fn typecheck_ok_and_error() {
 fn witness_and_counterexample() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
-    eval("%explore _1 -> lts", &mut ns);
+    eval("#explore _1 -> lts", &mut ns);
 
-    let out = eval("%witness EF emits(ack) on lts", &mut ns);
+    let out = eval("#witness EF emits(ack) on lts", &mut ns);
     let b = ok_display(&out);
     assert!(b.text_html.as_ref().unwrap().contains("witness"));
 
-    let out = eval("%counterexample AG emits(req) on lts", &mut ns);
+    let out = eval("#counterexample AG emits(req) on lts", &mut ns);
     let b = ok_display(&out);
     // AG emits(req) is false (after the comm nothing emits on req), so there is
     // a counterexample run.
@@ -257,7 +281,7 @@ fn witness_and_counterexample() {
 #[test]
 fn unknown_directive_errors() {
     let mut ns = Namespace::new();
-    let out = eval("%frobnicate lts", &mut ns);
+    let out = eval("#frobnicate lts", &mut ns);
     let err = out.error.expect("unknown directive must error");
     assert_eq!(err.ename, "DirectiveError");
     assert!(err.evalue.contains("frobnicate"));
@@ -266,11 +290,11 @@ fn unknown_directive_errors() {
 #[test]
 fn bad_arity_errors() {
     let mut ns = Namespace::new();
-    let out = eval("%explore", &mut ns);
+    let out = eval("#explore", &mut ns);
     let err = out.error.expect("empty explore must error");
     assert_eq!(err.ename, "DirectiveError");
 
-    let out = eval("%check EF emits(ack)", &mut ns);
+    let out = eval("#check EF emits(ack)", &mut ns);
     let err = out.error.expect("check without `on` must error");
     assert_eq!(err.ename, "DirectiveError");
 }
@@ -291,22 +315,11 @@ fn parse_error_has_span() {
 }
 
 #[test]
-fn unknown_magic_errors() {
-    let mut ns = Namespace::new();
-    // `%%rune` is a real magic now (covered by tests/rune.rs); only *unknown*
-    // `%%` magics error.
-    let out = eval("%%bogus", &mut ns);
-    let err = out.error.expect("unknown magic");
-    assert_eq!(err.ename, "MagicError");
-    assert!(err.evalue.contains("bogus"));
-}
-
-#[test]
 fn help_lists_directives() {
     let mut ns = Namespace::new();
-    let out = eval("%help", &mut ns);
+    let out = eval("#help", &mut ns);
     let b = ok_display(&out);
-    for d in ["%explore", "%check", "%bisim", "%typecheck", "emits("] {
+    for d in ["#explore", "#check", "#bisim", "#typecheck", "emits("] {
         assert!(b.text_plain.contains(d), "help missing {d}");
     }
 }
@@ -324,11 +337,11 @@ fn handshake_end_to_end() {
     ok_display(&out);
 
     // Explore its trace LTS and bind it.
-    let out = eval("%explore _1 -> lts", &mut ns);
+    let out = eval("#explore _1 -> lts", &mut ns);
     ok_display(&out);
 
     // EF emits(ack): the request can be acknowledged — true.
-    let out = eval("%check EF emits(ack) on lts", &mut ns);
+    let out = eval("#check EF emits(ack) on lts", &mut ns);
     let b = ok_display(&out);
     assert!(
         b.text_plain.starts_with("Holds"),
@@ -338,7 +351,7 @@ fn handshake_end_to_end() {
 
     // AG emits(ack): it is always acknowledged — false (the initial state does
     // not emit on ack).
-    let out = eval("%check AG emits(ack) on lts", &mut ns);
+    let out = eval("#check AG emits(ack) on lts", &mut ns);
     let b = ok_display(&out);
     assert!(
         b.text_plain.starts_with("Does not hold"),
@@ -356,11 +369,11 @@ fn handshake_end_to_end() {
 fn deeply_nested_formula_errors_cleanly() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
-    eval("%explore _1 -> lts", &mut ns);
+    eval("#explore _1 -> lts", &mut ns);
 
     // ~400 nested EF(...) — well past the parser's depth cap.
     let formula = format!("EF {}emits(ack){}", "(".repeat(400), ")".repeat(400));
-    let out = eval(&format!("%check {formula} on lts"), &mut ns);
+    let out = eval(&format!("#check {formula} on lts"), &mut ns);
     let err = out
         .error
         .expect("deeply-nested formula must error, not crash");
@@ -378,7 +391,7 @@ fn deeply_nested_dsl_errors_cleanly() {
     assert_eq!(err.ename, "NestingError");
 
     // The same guard protects a directive that parses inline DSL.
-    let out = eval(&format!("%step {}", "(".repeat(600)), &mut ns);
+    let out = eval(&format!("#step {}", "(".repeat(600)), &mut ns);
     let err = out.error.expect("deeply-nested inline DSL must error");
     assert_eq!(err.ename, "NestingError");
 }
@@ -389,7 +402,7 @@ fn deeply_nested_type_errors_cleanly() {
     eval(HANDSHAKE, &mut ns);
     // ~600 nested Chan(...) in the typing environment.
     let ty = format!("req:{}Nil{}", "Chan(".repeat(600), ")".repeat(600));
-    let out = eval(&format!("%typecheck _1 with {ty}"), &mut ns);
+    let out = eval(&format!("#typecheck _1 with {ty}"), &mut ns);
     let err = out.error.expect("deeply-nested type must error, not crash");
     assert_eq!(err.ename, "NestingError");
 }
@@ -403,7 +416,7 @@ fn reduced_lts_rejects_ex_and_caveats_others() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
     // A partial-order-reduced LTS.
-    let out = eval("%explore _1 por -> rlts", &mut ns);
+    let out = eval("#explore _1 por -> rlts", &mut ns);
     let b = ok_display(&out);
     assert!(
         b.text_plain.contains("caveat"),
@@ -412,13 +425,13 @@ fn reduced_lts_rejects_ex_and_caveats_others() {
     );
 
     // EX (next-time) is not preserved under reduction — must be rejected.
-    let out = eval("%check EX emits(ack) on rlts", &mut ns);
+    let out = eval("#check EX emits(ack) on rlts", &mut ns);
     let err = out.error.expect("EX on a reduced LTS must be rejected");
     assert_eq!(err.ename, "ReductionError");
     assert!(err.evalue.contains("EX"), "evalue: {}", err.evalue);
 
     // A non-EX property is allowed but its rendering carries the caveat.
-    let out = eval("%check EF emits(ack) on rlts", &mut ns);
+    let out = eval("#check EF emits(ack) on rlts", &mut ns);
     let b = ok_display(&out);
     assert!(b.text_plain.starts_with("Holds"), "plain: {}", b.text_plain);
     assert!(
@@ -429,17 +442,17 @@ fn reduced_lts_rejects_ex_and_caveats_others() {
     assert!(b.text_html.as_ref().unwrap().contains("caveat"));
 
     // Symmetry reduction behaves the same way for EX.
-    let out = eval("%explore _1 sym=req,ack -> slts", &mut ns);
+    let out = eval("#explore _1 sym=req,ack -> slts", &mut ns);
     ok_display(&out);
-    let out = eval("%check EX emits(ack) on slts", &mut ns);
+    let out = eval("#check EX emits(ack) on slts", &mut ns);
     assert_eq!(
         out.error.expect("EX on symmetry LTS").ename,
         "ReductionError"
     );
 
     // A full LTS has no caveat and accepts EX.
-    eval("%explore _1 -> flts", &mut ns);
-    let out = eval("%check EX emits(ack) on flts", &mut ns);
+    eval("#explore _1 -> flts", &mut ns);
+    let out = eval("#check EX emits(ack) on flts", &mut ns);
     let b = ok_display(&out);
     assert!(!b.text_plain.contains("caveat"), "full LTS must not caveat");
 }
@@ -452,7 +465,7 @@ fn reduced_lts_rejects_ex_and_caveats_others() {
 fn auto_names_skip_user_bindings() {
     let mut ns = Namespace::new();
     // User explicitly claims `_1`.
-    eval("_1 = new a\n\na!(0)", &mut ns);
+    eval("#define _1\nnew a\n\na!(0)", &mut ns);
     // An unnamed cell must NOT clobber it — it should land on `_2`.
     eval("new b\n\nb!(0)", &mut ns);
     assert!(matches!(ns.get("_1"), Some(Obj::Proc(_))));
@@ -462,8 +475,8 @@ fn auto_names_skip_user_bindings() {
 #[test]
 fn bisim_extra_args_error() {
     let mut ns = Namespace::new();
-    eval("p = new a\n\na!(0)", &mut ns);
-    let out = eval("%bisim p p p", &mut ns);
+    eval("#define p\nnew a\n\na!(0)", &mut ns);
+    let out = eval("#bisim p p p", &mut ns);
     let err = out.error.expect("extra bisim args must error");
     assert_eq!(err.ename, "DirectiveError");
 }

@@ -339,10 +339,10 @@ async fn drive(ports: ConnPorts) {
     assert_eq!(reply.content["status"], "ok");
     assert_eq!(reply.content["execution_count"], 1);
 
-    // ---- %explore -> display_data carrying image/svg+xml ------------------
+    // ---- #explore -> display_data carrying image/svg+xml ------------------
     // Proves the wiring end to end: the notebook core lays the trace LTS out to
     // an inline SVG and the kernel forwards it under the image/svg+xml MIME key.
-    let (reply, io) = execute(&mut shell, &mut iopub, &fe, "%explore _1 -> g", false).await;
+    let (reply, io) = execute(&mut shell, &mut iopub, &fe, "#explore _1 -> g", false).await;
     assert_eq!(reply.content["status"], "ok");
     assert_eq!(reply.content["execution_count"], 2);
     let svg_display = io
@@ -351,7 +351,7 @@ async fn drive(ports: ConnPorts) {
             m.header["msg_type"] == "display_data"
                 && m.content["data"]["image/svg+xml"].as_str().is_some()
         })
-        .expect("%explore must emit a display_data with image/svg+xml");
+        .expect("#explore must emit a display_data with image/svg+xml");
     let svg = svg_display.content["data"]["image/svg+xml"]
         .as_str()
         .unwrap();
@@ -367,8 +367,8 @@ async fn drive(ports: ConnPorts) {
         "parse-error cell must broadcast an iopub error"
     );
 
-    // ---- a %%rune cell -> captured stdout stream + display_data -----------
-    // The embedded Rune script reads the `g` LTS bound by the earlier %explore
+    // ---- a #rune cell -> captured stdout stream + display_data -----------
+    // The embedded Rune script reads the `g` LTS bound by the earlier #explore
     // through the shared session namespace, prints a line (captured into an
     // iopub `stream`), and returns the LTS (forwarded as a display_data). Proves
     // the scripting engine is wired end to end through the kernel.
@@ -376,15 +376,15 @@ async fn drive(ports: ConnPorts) {
         &mut shell,
         &mut iopub,
         &fe,
-        "%%rune\nlet lts = stratum::get(\"g\");\nprintln!(\"g has {} states\", lts.num_states());\nlts\n",
+        "#rune\nlet lts = stratum::get(\"g\");\nprintln!(\"g has {} states\", lts.num_states());\nlts\n",
         false,
     )
     .await;
-    assert_eq!(reply.content["status"], "ok", "%%rune cell must succeed");
+    assert_eq!(reply.content["status"], "ok", "#rune cell must succeed");
     let stream = io
         .iter()
         .find(|m| m.header["msg_type"] == "stream")
-        .expect("%%rune println! must broadcast an iopub stream");
+        .expect("#rune println! must broadcast an iopub stream");
     assert_eq!(stream.content["name"], "stdout");
     assert!(
         stream.content["text"].as_str().unwrap().contains("g has"),
@@ -393,18 +393,18 @@ async fn drive(ports: ConnPorts) {
     );
     assert!(
         io.iter().any(|m| m.header["msg_type"] == "display_data"),
-        "%%rune returning an LTS must emit a display_data"
+        "#rune returning an LTS must emit a display_data"
     );
 
     // ---- complete_request -> complete_reply -------------------------------
     // `_1` and `g` are bound in the session by now (the DSL cell auto-named
-    // `_1`, and `%explore ... -> g` bound the LTS). Completing `%exp` must
-    // offer the directive names with a `%`-anchored replacement range.
+    // `_1`, and `#explore ... -> g` bound the LTS). Completing `#exp` must
+    // offer the directive names with a `#`-anchored replacement range.
     shell
         .send(
             ZmqMessage::try_from(fe.request(
                 "complete_request",
-                json!({ "code": "%exp", "cursor_pos": 4 }),
+                json!({ "code": "#exp", "cursor_pos": 4 }),
             ))
             .unwrap(),
         )
@@ -422,7 +422,7 @@ async fn drive(ports: ConnPorts) {
         .map(|m| m.as_str().unwrap().to_string())
         .collect();
     assert!(
-        matches.contains(&"%explore".to_string()) && matches.contains(&"%expand".to_string()),
+        matches.contains(&"#explore".to_string()) && matches.contains(&"#expand".to_string()),
         "complete_reply must offer directive names, got {matches:?}"
     );
 
