@@ -32,6 +32,9 @@ use stratum_core::{
     canonicalize, canonicalize_name, name_equiv, step_labeled, subst_semantic, Name, Proc,
 };
 
+mod event;
+pub use event::{run_events, Event, EventKey, OccKey};
+
 /// A labelled transition to another state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transition {
@@ -464,7 +467,7 @@ fn enabled_transitions(rep: &Proc, observed: &[Name]) -> (Vec<Enabled>, Vec<Proc
 /// Flatten `p` into its active parallel components (dropping units `0`, splicing
 /// nested parallels), without descending under any prefix — the same active-
 /// component notion `stratum_core` reduces over.
-fn flatten(p: &Proc, out: &mut Vec<Proc>) {
+pub(crate) fn flatten(p: &Proc, out: &mut Vec<Proc>) {
     match p {
         Proc::Zero => {}
         Proc::Par(ps) => {

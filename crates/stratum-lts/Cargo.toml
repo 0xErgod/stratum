@@ -8,6 +8,9 @@ description = "Labelled transition system over ρ-calculus reduction — the tra
 
 [dependencies]
 stratum-core = { path = "../stratum-core" }
+# Structured, zero-cost-without-a-subscriber diagnostics over the trace stepper
+# (event firing, provenance) — quiet in normal builds, opt-in via any subscriber.
+tracing = "0.1"
 
 [dev-dependencies]
 # Test-only back-edge: exercise the real μ-calculus checker on both the full and
