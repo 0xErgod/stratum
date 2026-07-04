@@ -5,11 +5,13 @@
 //! `libzmq`, which matters on Windows — and delegates all cell-level work to the
 //! substrate-agnostic [`stratum_notebook`] core.
 //!
-//! Phase 0 is a *walking skeleton*: it proves the wire protocol end to end
-//! (HMAC signing, multipart framing, the five sockets, the handshake) by
-//! answering `kernel_info_request` and echoing `execute_request` cells back as
-//! output. Language-aware evaluation arrives in later phases inside
-//! `stratum-notebook`.
+//! The wire protocol (HMAC signing, multipart framing, the five sockets, the
+//! handshake) is proven end to end by the acceptance test. `execute_request`
+//! cells are evaluated by [`stratum_notebook::evaluate`] against a persistent
+//! session [`Namespace`]; the resulting MIME bundles / errors are translated
+//! into iopub `display_data` / `error` messages. The `evaluate` call is
+//! `catch_unwind`-guarded so an ordinary panic in the core surfaces as an error
+//! reply rather than tearing down the session.
 //!
 //! ## Sockets
 //!
@@ -33,6 +35,7 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 use zeromq::{PubSocket, RepSocket, RouterSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
+use stratum_notebook::{CellError, CellOutcome, MimeBundle, Namespace};
 use wire::{ConnectionInfo, Header, Message, Outgoing, PROTOCOL_VERSION};
 
 /// Shared handle to the single PUB socket used for all iopub broadcasts.
@@ -138,6 +141,9 @@ async fn shell_loop(
     kernel_session: String,
 ) -> anyhow::Result<()> {
     let mut execution_count: i64 = 0;
+    // The session namespace: DSL definitions and directive results accumulate
+    // here across execute_requests, owned by the (single) shell loop.
+    let mut namespace = Namespace::new();
     loop {
         let zmsg = shell.recv().await?;
         let msg = match Message::parse(to_frames(zmsg), &key) {
@@ -149,8 +155,15 @@ async fn shell_loop(
                 continue;
             }
         };
-        if let Some(reply) =
-            handle_shell(&msg, &iopub, &key, &kernel_session, &mut execution_count).await?
+        if let Some(reply) = handle_shell(
+            &msg,
+            &iopub,
+            &key,
+            &kernel_session,
+            &mut execution_count,
+            &mut namespace,
+        )
+        .await?
         {
             shell.send(from_frames(reply)).await?;
         }
@@ -164,6 +177,7 @@ async fn handle_shell(
     key: &[u8],
     kernel_session: &str,
     execution_count: &mut i64,
+    namespace: &mut Namespace,
 ) -> anyhow::Result<Option<Vec<Vec<u8>>>> {
     let session = session_of(msg, kernel_session);
     match msg.msg_type() {
@@ -209,45 +223,91 @@ async fn handle_shell(
             )
             .await?;
 
-            // Delegate rendering to the substrate-agnostic notebook core.
-            let rendered = stratum_notebook::render_text(&code);
+            // Delegate all cell-level work to the substrate-agnostic notebook
+            // core, which mutates the persistent session namespace.
+            //
+            // Defense-in-depth: contain an *ordinary* panic in the notebook core
+            // so one bad cell surfaces as an error reply rather than tearing down
+            // the shell loop / session. (A stack overflow is uncatchable — the
+            // depth guards inside `stratum-notebook` are what prevent that.)
+            let outcome: CellOutcome =
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    stratum_notebook::evaluate(&code, namespace)
+                })) {
+                    Ok(outcome) => outcome,
+                    Err(payload) => {
+                        let detail = panic_detail(&*payload);
+                        CellOutcome::err(CellError::new(
+                            "InternalError",
+                            format!("internal error while evaluating the cell: {detail}"),
+                        ))
+                    }
+                };
 
             if !silent {
-                publish(
-                    iopub,
-                    key,
-                    "stream",
-                    &session,
-                    msg.header.clone(),
-                    json!({ "name": "stdout", "text": format!("{rendered}\n") }),
-                )
-                .await?;
-                publish(
-                    iopub,
-                    key,
-                    "execute_result",
-                    &session,
-                    msg.header.clone(),
-                    json!({
-                        "execution_count": count,
-                        "data": { "text/plain": rendered },
-                        "metadata": {},
-                    }),
-                )
-                .await?;
+                // Streamed stdout, if any.
+                if !outcome.stream_stdout.is_empty() {
+                    publish(
+                        iopub,
+                        key,
+                        "stream",
+                        &session,
+                        msg.header.clone(),
+                        json!({ "name": "stdout", "text": outcome.stream_stdout }),
+                    )
+                    .await?;
+                }
+                // Each rich display becomes one iopub display_data.
+                for bundle in &outcome.displays {
+                    publish(
+                        iopub,
+                        key,
+                        "display_data",
+                        &session,
+                        msg.header.clone(),
+                        json!({
+                            "data": mime_data(bundle),
+                            "metadata": {},
+                            "transient": {},
+                        }),
+                    )
+                    .await?;
+                }
+                // An error becomes an iopub `error` broadcast.
+                if let Some(err) = &outcome.error {
+                    publish(
+                        iopub,
+                        key,
+                        "error",
+                        &session,
+                        msg.header.clone(),
+                        json!({
+                            "ename": err.ename,
+                            "evalue": err.evalue,
+                            "traceback": err.traceback,
+                        }),
+                    )
+                    .await?;
+                }
             }
 
-            let reply = reply_to(
-                msg,
-                "execute_reply",
-                &session,
+            let reply_content = if let Some(err) = &outcome.error {
+                json!({
+                    "status": "error",
+                    "execution_count": count,
+                    "ename": err.ename,
+                    "evalue": err.evalue,
+                    "traceback": err.traceback,
+                })
+            } else {
                 json!({
                     "status": "ok",
                     "execution_count": count,
                     "user_expressions": {},
                     "payload": [],
-                }),
-            );
+                })
+            };
+            let reply = reply_to(msg, "execute_reply", &session, reply_content);
             let frames = reply.into_frames(key);
 
             // idle
@@ -332,9 +392,37 @@ fn kernel_info_content() -> Value {
             "pygments_lexer": "text",
             "codemirror_mode": "text",
         },
-        "banner": "Stratum kernel (Phase 0) — executable core for the πρσϕ-Formalism (reflective ρ-calculus). Cells are echoed back.",
+        "banner": "Stratum kernel — executable core for the πρσϕ-Formalism (reflective ρ-calculus). DSL cells define processes; %-directives explore, model-check, and compare them. Try %help.",
         "help_links": [],
     })
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+/// Build the Jupyter `data` map for a [`MimeBundle`], including only the MIME
+/// keys the renderer populated (`text/plain` is always present).
+fn mime_data(bundle: &MimeBundle) -> Value {
+    let mut data = serde_json::Map::new();
+    data.insert(
+        "text/plain".to_string(),
+        Value::String(bundle.text_plain.clone()),
+    );
+    if let Some(html) = &bundle.text_html {
+        data.insert("text/html".to_string(), Value::String(html.clone()));
+    }
+    if let Some(svg) = &bundle.image_svg {
+        data.insert("image/svg+xml".to_string(), Value::String(svg.clone()));
+    }
+    Value::Object(data)
 }
 
 /// Compose a ROUTER reply that inherits the request's identities and header.
