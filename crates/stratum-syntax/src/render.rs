@@ -139,3 +139,175 @@ fn go_name(
         },
     }
 }
+
+// ---------------------------------------------------------------------------
+// LaTeX rendering (classic reflective rho-calculus notation)
+// ---------------------------------------------------------------------------
+
+/// Render a closed [`Proc`] as a LaTeX math expression in the notation of
+/// Meredith & Radestock, *A Reflective Higher-order Calculus* (ENTCS 141(5),
+/// 2005), §2.0.1: `0` (null), `x(y).P` (input), `x⟨|P|⟩` — the *lift* brackets —
+/// for output, `⌝x⌜` (reversed corners) for *drop*, `⌜P⌝` for *quote*, and
+/// `P | Q` for parallel composition. Bound names are the paper's single letters
+/// `x, y, z, …`, and the name-output sugar `x⟨|⌝y⌜|⟩` is contracted to `x[y]`
+/// (§2.0.5).
+///
+/// The result is bare math (no `$…$` delimiters) intended to be embedded in a
+/// `text/latex` MIME payload. It is for reading, not re-parsing.
+///
+/// ```
+/// use stratum_syntax::{parse, to_latex};
+///
+/// assert_eq!(to_latex(&parse("@0!(0)").unwrap()), r"\ulcorner 0 \urcorner\langle\!| 0 |\!\rangle");
+/// // Single-letter binder `x`, and the name-output sugar `x[y]`.
+/// assert_eq!(
+///     to_latex(&parse("@0(x).@0!(*x)").unwrap()),
+///     r"\ulcorner 0 \urcorner(x).\ulcorner 0 \urcorner[x]",
+/// );
+/// ```
+pub fn to_latex(p: &Proc) -> String {
+    let mut env: Vec<(u64, String)> = Vec::new();
+    let mut counter = 0usize;
+    latex_proc(p, &mut env, &mut counter, None)
+}
+
+/// Render a closed [`Proc`] as LaTeX, **folding known names to their source
+/// aliases** (typeset with `\mathit{…}`). The alias-folding complement of
+/// [`to_latex`], analogous to [`to_source_folded`].
+///
+/// ```
+/// use stratum_syntax::{parse_with_aliases, to_latex_folded};
+///
+/// let (p, aliases) = parse_with_aliases("new req, ack\nreq!(0) | req(x).ack!(0)").unwrap();
+/// assert_eq!(
+///     to_latex_folded(&p, &aliases),
+///     r"\mathit{req}\langle\!| 0 |\!\rangle \mid \mathit{req}(x).\mathit{ack}\langle\!| 0 |\!\rangle",
+/// );
+/// ```
+pub fn to_latex_folded(p: &Proc, aliases: &Aliases) -> String {
+    let mut env: Vec<(u64, String)> = Vec::new();
+    let mut counter = 0usize;
+    latex_proc(p, &mut env, &mut counter, Some(aliases))
+}
+
+/// Render a process to LaTeX, threading the binder environment, the fresh-id
+/// counter (binders become `v_{0}, v_{1}, …`), and the optional alias table.
+fn latex_proc(
+    p: &Proc,
+    env: &mut Vec<(u64, String)>,
+    counter: &mut usize,
+    aliases: Option<&Aliases>,
+) -> String {
+    match p {
+        // Meredith–Radestock §2.0.1: `0`, `⌝x⌜` (drop), `x⟨|P|⟩` (lift/output).
+        Proc::Zero => "0".to_string(),
+        Proc::Drop(name) => {
+            format!(r"\urcorner {} \ulcorner", latex_name(name, env, counter, aliases))
+        }
+        Proc::Lift { chan, arg } => {
+            let chan_s = latex_name(chan, env, counter, aliases);
+            match &**arg {
+                // Name-output sugar: `x⟨|⌝y⌜|⟩ ≜ x[y]` (Meredith–Radestock §2.0.5).
+                Proc::Drop(name) => {
+                    format!("{chan_s}[{}]", latex_name(name, env, counter, aliases))
+                }
+                other => format!(
+                    r"{chan_s}\langle\!| {} |\!\rangle",
+                    latex_proc(other, env, counter, aliases),
+                ),
+            }
+        }
+        Proc::Input { chan, bound, body } => {
+            let chan_s = latex_name(chan, env, counter, aliases);
+            let id = latex_binder(*counter);
+            *counter += 1;
+            env.push((*bound, id.clone()));
+            let body_s = latex_proc(body, env, counter, aliases);
+            env.pop();
+            let body_s = if matches!(**body, Proc::Par(_)) {
+                format!(r"\left( {body_s} \right)")
+            } else {
+                body_s
+            };
+            format!("{chan_s}({id}).{body_s}")
+        }
+        Proc::Par(ps) => {
+            if ps.is_empty() {
+                return "0".to_string();
+            }
+            ps.iter()
+                .map(|c| latex_proc(c, env, counter, aliases))
+                .collect::<Vec<_>>()
+                .join(r" \mid ")
+        }
+    }
+}
+
+/// Render a name to LaTeX: a bound variable as `v_{n}`, a quote as `\ulcorner
+/// P\urcorner`, or (when folding) a known alias as `\mathit{name}`.
+fn latex_name(
+    name: &Name,
+    env: &mut Vec<(u64, String)>,
+    counter: &mut usize,
+    aliases: Option<&Aliases>,
+) -> String {
+    if let Some(aliases) = aliases {
+        if let Some(id) = aliases.get(name) {
+            return latex_ident(id);
+        }
+    }
+    match name {
+        Name::Var(sym) => env
+            .iter()
+            .rev()
+            .find(|(s, _)| s == sym)
+            .map(|(_, id)| id.clone())
+            .expect("closed term: every Var resolves to an enclosing binder"),
+        Name::Quote(p) => {
+            format!(r"\ulcorner {} \urcorner", latex_proc(p, env, counter, aliases))
+        }
+    }
+}
+
+/// Render a single [`Name`] to LaTeX, folding a known alias to `\mathit{name}`.
+///
+/// Standalone (no binder environment), for labelling contexts like LTS
+/// transition channels. A bound [`Name::Var`] — which should not appear at the
+/// top level — degrades to `v_{sym}` rather than panicking.
+pub fn name_to_latex(name: &Name, aliases: Option<&Aliases>) -> String {
+    if let Some(aliases) = aliases {
+        if let Some(id) = aliases.get(name) {
+            return latex_ident(id);
+        }
+    }
+    match name {
+        Name::Var(sym) => format!("v_{{{sym}}}"),
+        Name::Quote(_) => {
+            let mut env: Vec<(u64, String)> = Vec::new();
+            let mut counter = 0usize;
+            latex_name(name, &mut env, &mut counter, aliases)
+        }
+    }
+}
+
+/// The LaTeX name for the `n`-th input binder, following the paper's single
+/// letters `x, y, z, …` (§2 uses `x, y, z` for names). After the pool is
+/// exhausted it wraps with a numeric subscript (`x_{1}`, `y_{1}`, …) so binders
+/// stay distinct in arbitrarily large terms.
+fn latex_binder(n: usize) -> String {
+    const LETTERS: &[u8] = b"xyzuvwpqrst";
+    let base = LETTERS[n % LETTERS.len()] as char;
+    let tier = n / LETTERS.len();
+    if tier == 0 {
+        base.to_string()
+    } else {
+        format!("{base}_{{{tier}}}")
+    }
+}
+
+/// Typeset a source identifier as an upright multi-letter math name,
+/// `\mathit{…}`, escaping the LaTeX-special `_` so channel names like `K_A`
+/// survive in math mode.
+pub fn latex_ident(id: &str) -> String {
+    format!(r"\mathit{{{}}}", id.replace('_', r"\_"))
+}

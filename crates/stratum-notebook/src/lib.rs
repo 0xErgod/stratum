@@ -13,8 +13,9 @@
 //! [`evaluate`] runs one cell against it:
 //!
 //! * A plain **DSL cell** parses a process, binds it into the namespace under an
-//!   auto-generated name (`_1`, `_2`, …), and renders the transparency pair; a
-//!   `#define <name>` header (or `#define <name> <expr>` inline) names it instead.
+//!   auto-generated name (`_1`, `_2`, …), and renders its **surface form** (the
+//!   desugared core is available on demand via `#expand`); a `#define <name>`
+//!   header (or `#define <name> <expr>` inline) names it instead.
 //! * A line beginning with `#` is a **directive** — a thin wrapper over the
 //!   toolkit (`#explore`, `#check`, `#bisim`, `#typecheck`, …) that renders its
 //!   result and optionally binds it with `-> name`.
@@ -24,8 +25,9 @@
 //!   [`script`]); its `println!` output and final value flow back as the cell's
 //!   stdout and display.
 //!
-//! Results come back as [`MimeBundle`]s (`text/plain` + optional `text/html` /
-//! `image/svg+xml`); the front-end maps those onto its own display messages.
+//! Results come back as [`MimeBundle`]s: a `text/plain` ASCII listing always,
+//! plus a `text/latex` view in [`Repr::Latex`] mode (`#latex` / `#ascii`). The
+//! front-end maps those onto its own display messages.
 
 #![forbid(unsafe_code)]
 
@@ -46,8 +48,8 @@ use stratum::syntax::Aliases;
 pub use eval::evaluate;
 pub use formula::{parse_formula, CompiledFormula, FormulaError};
 pub use render::{
-    dot_to_svg, escape_html, render_checked, render_lts, render_proc, render_run, render_typecheck,
-    render_verdict, MimeBundle,
+    escape_html, render_checked, render_core, render_lts, render_proc, render_run,
+    render_typecheck, render_verdict, MimeBundle,
 };
 pub use service::{complete, inspect, is_complete, Completions, Inspection, IsComplete};
 
@@ -142,6 +144,33 @@ impl Obj {
     }
 }
 
+/// How results are represented in a cell's output.
+///
+/// Every renderer always emits a `text/plain` ASCII listing (copyable as-is);
+/// [`Repr::Latex`] additionally emits a `text/latex` payload in classic
+/// reflective rho-calculus notation, which a MathJax frontend typesets and which
+/// copies as either LaTeX source or an image. The mode is a session setting,
+/// toggled with the `#ascii` / `#latex` directives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Repr {
+    /// Plain ASCII listings only (the startup default).
+    #[default]
+    Ascii,
+    /// ASCII listings plus a `text/latex` payload for pretty, copyable output.
+    Latex,
+}
+
+impl Repr {
+    /// A short human-readable label for the mode (used by the `#repr` directive).
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Repr::Ascii => "ASCII",
+            Repr::Latex => "LaTeX",
+        }
+    }
+}
+
 /// The per-session interactive environment: the bindings accumulated by earlier
 /// cells, plus the name/alias tables the evaluator needs to resolve DSL
 /// identifiers across cells.
@@ -158,6 +187,8 @@ pub struct Namespace {
     aliases: Aliases,
     /// Counter for auto-generated binding names (`_1`, `_2`, …).
     auto_counter: usize,
+    /// The active output representation mode (`#ascii` / `#latex`).
+    repr: Repr,
 }
 
 impl Namespace {
@@ -237,6 +268,17 @@ impl Namespace {
     #[must_use]
     pub fn aliases(&self) -> &Aliases {
         &self.aliases
+    }
+
+    /// The active output representation mode.
+    #[must_use]
+    pub fn repr(&self) -> Repr {
+        self.repr
+    }
+
+    /// Set the active output representation mode (`#ascii` / `#latex`).
+    pub fn set_repr(&mut self, repr: Repr) {
+        self.repr = repr;
     }
 
     /// Record the alias table of a fresh parse and harvest its surface→canonical

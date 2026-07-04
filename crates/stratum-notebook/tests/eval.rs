@@ -83,35 +83,32 @@ fn define_inline_and_header_forms() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn dsl_render_shows_transparency_pair() {
+fn dsl_render_shows_surface_only() {
     let mut ns = Namespace::new();
     let out = eval(HANDSHAKE, &mut ns);
     let b = ok_display(&out);
-    assert!(!b.text_plain.is_empty());
-    let html = b.text_html.as_ref().expect("proc renders text/html");
-    assert!(html.contains("surface"), "html: {html}");
-    assert!(html.contains("core"), "html: {html}");
+    // Surface form only — the folded channel names, no desugared core.
+    assert_eq!(b.text_plain, "req!(0) | req(v0).ack!(0)");
+    // ASCII mode (the default) emits no LaTeX.
+    assert!(b.text_latex.is_none());
 }
 
 #[test]
-fn lts_renders_valid_svg() {
+fn lts_renders_as_listing() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
     let out = eval("#explore _1 -> lts", &mut ns);
     let b = ok_display(&out);
-    let svg = b.image_svg.as_ref().expect("LTS renders image/svg+xml");
-    assert!(
-        svg.contains("<svg"),
-        "not an svg: {}",
-        &svg[..svg.len().min(80)]
-    );
-    assert!(svg.len() > 100, "svg suspiciously short");
+    // No diagram — a plain-text states + transitions listing.
+    assert!(b.text_latex.is_none());
     assert!(b.text_plain.contains("states"));
     assert!(b.text_plain.contains("transitions"));
+    assert!(b.text_plain.contains("s0"), "listing: {}", b.text_plain);
+    assert!(b.text_plain.contains("-->"), "listing: {}", b.text_plain);
 }
 
 #[test]
-fn verdict_renders_html() {
+fn verdict_renders_plain() {
     let mut ns = Namespace::new();
     eval(
         "#define p
@@ -129,32 +126,30 @@ a!(0)",
     );
     let out = eval("#bisim p q", &mut ns);
     let b = ok_display(&out);
-    let html = b.text_html.as_ref().expect("verdict renders html");
     assert!(
-        html.contains("Equivalent")
-            || html.contains("Distinguished")
-            || html.contains("Inconclusive"),
-        "html: {html}"
+        b.text_plain.contains("Equivalent")
+            || b.text_plain.contains("Distinguished")
+            || b.text_plain.contains("Inconclusive"),
+        "plain: {}",
+        b.text_plain
     );
 }
 
 #[test]
-fn trace_renders_step_table() {
+fn trace_renders_step_listing() {
     let mut ns = Namespace::new();
     eval(HANDSHAKE, &mut ns);
     eval("#explore _1 -> lts", &mut ns);
     let out = eval("#trace lts", &mut ns);
     let b = ok_display(&out);
-    let html = b.text_html.as_ref().expect("trace renders html table");
-    assert!(html.contains("<table"), "html: {html}");
-    assert!(html.contains("channel"));
     assert!(b.text_plain.contains("step"));
+    assert!(b.text_plain.contains("-->"), "trace: {}", b.text_plain);
 }
 
 #[test]
 fn expand_shows_core() {
     let mut ns = Namespace::new();
-    // Inline expand of surface DSL.
+    // Inline expand of surface DSL desugars to the raw core (explicit quotes).
     let out = eval(
         "#expand new a
 
@@ -162,7 +157,7 @@ a!(0)",
         &mut ns,
     );
     let b = ok_display(&out);
-    assert!(!b.text_plain.is_empty());
+    assert!(b.text_plain.contains('@'), "core: {}", b.text_plain);
     // Named expand of a bound proc.
     eval(
         "#define p
@@ -173,7 +168,7 @@ a!(0)",
     );
     let out = eval("#expand p", &mut ns);
     let b = ok_display(&out);
-    assert!(b.text_html.as_ref().unwrap().contains("core"));
+    assert!(b.text_plain.contains('@'), "core: {}", b.text_plain);
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +233,6 @@ a!(0) | a(x).0",
     );
     let b = ok_display(&out);
     assert!(b.text_plain.contains("reduct"), "plain: {}", b.text_plain);
-    assert!(b.text_html.as_ref().unwrap().contains("<table"));
 }
 
 #[test]
@@ -269,13 +263,17 @@ fn witness_and_counterexample() {
 
     let out = eval("#witness EF emits(ack) on lts", &mut ns);
     let b = ok_display(&out);
-    assert!(b.text_html.as_ref().unwrap().contains("witness"));
+    assert!(b.text_plain.contains("witness"), "plain: {}", b.text_plain);
 
     let out = eval("#counterexample AG emits(req) on lts", &mut ns);
     let b = ok_display(&out);
     // AG emits(req) is false (after the comm nothing emits on req), so there is
     // a counterexample run.
-    assert!(b.text_html.as_ref().unwrap().contains("counterexample"));
+    assert!(
+        b.text_plain.contains("counterexample"),
+        "plain: {}",
+        b.text_plain
+    );
 }
 
 #[test]
@@ -439,7 +437,6 @@ fn reduced_lts_rejects_ex_and_caveats_others() {
         "reduced verdict must carry a caveat: {}",
         b.text_plain
     );
-    assert!(b.text_html.as_ref().unwrap().contains("caveat"));
 
     // Symmetry reduction behaves the same way for EX.
     let out = eval("#explore _1 sym=req,ack -> slts", &mut ns);
@@ -479,4 +476,57 @@ fn bisim_extra_args_error() {
     let out = eval("#bisim p p p", &mut ns);
     let err = out.error.expect("extra bisim args must error");
     assert_eq!(err.ename, "DirectiveError");
+}
+
+// ---------------------------------------------------------------------------
+// Representation modes: #ascii (default), #latex, #repr.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn latex_mode_emits_text_latex() {
+    let mut ns = Namespace::new();
+
+    // The default is ASCII: no LaTeX on a proc cell.
+    let out = eval(HANDSHAKE, &mut ns);
+    assert!(ok_display(&out).text_latex.is_none());
+
+    // Switch to LaTeX; #latex reports the new mode.
+    let out = eval("#latex", &mut ns);
+    assert!(ok_display(&out).text_plain.contains("LaTeX"));
+
+    // A proc now carries a classic-rho text/latex payload alongside the ASCII.
+    let out = eval("#define hs\nnew req, ack\n\nreq!(0) | req(x).ack!(0)", &mut ns);
+    let b = ok_display(&out);
+    assert_eq!(b.text_plain, "req!(0) | req(v0).ack!(0)");
+    let latex = b.text_latex.as_ref().expect("latex mode emits text/latex");
+    // Meredith–Radestock lift brackets `x⟨|P|⟩`, not pi-calculus `\overline{x}`.
+    assert!(latex.contains(r"\mathit{req}\langle\!|"), "latex: {latex}");
+    assert!(latex.contains(r"\mid"), "latex: {latex}");
+
+    // An LTS listing gets a LaTeX array with \xrightarrow edges.
+    let out = eval("#explore hs -> g", &mut ns);
+    let latex = ok_display(&out)
+        .text_latex
+        .as_ref()
+        .expect("latex LTS listing")
+        .clone();
+    assert!(latex.contains(r"\begin{array}"), "latex: {latex}");
+    assert!(latex.contains(r"\xrightarrow"), "latex: {latex}");
+
+    // Back to ASCII: no more LaTeX.
+    let out = eval("#ascii", &mut ns);
+    assert!(ok_display(&out).text_plain.contains("ASCII"));
+    let out = eval("#explore hs", &mut ns);
+    assert!(ok_display(&out).text_latex.is_none());
+}
+
+#[test]
+fn repr_reports_current_mode() {
+    let mut ns = Namespace::new();
+    // `#repr` alone does not change the mode; it reports the default.
+    let out = eval("#repr", &mut ns);
+    assert!(ok_display(&out).text_plain.contains("ASCII"));
+    eval("#latex", &mut ns);
+    let out = eval("#repr", &mut ns);
+    assert!(ok_display(&out).text_plain.contains("LaTeX"));
 }

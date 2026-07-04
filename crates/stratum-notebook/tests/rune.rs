@@ -134,7 +134,7 @@ fn rune_check_agrees_with_directive() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn rune_return_value_renders_lts_svg() {
+fn rune_return_value_renders_lts_listing() {
     let mut ns = Namespace::new();
     let out = ok(evaluate(
         "#rune\n\
@@ -148,12 +148,13 @@ fn rune_return_value_renders_lts_svg() {
         "plain was: {:?}",
         bundle.text_plain
     );
-    let svg = bundle.image_svg.as_ref().expect("LTS renders an SVG");
-    assert!(svg.contains("<svg"), "svg was: {svg}");
+    // A returned LTS renders as a plain listing (no diagram, ASCII by default).
+    assert!(bundle.text_latex.is_none());
+    assert!(bundle.text_plain.contains("s0"), "{:?}", bundle.text_plain);
 }
 
 #[test]
-fn rune_return_verdict_renders_html() {
+fn rune_return_verdict_renders_plain() {
     let mut ns = Namespace::new();
     let out = ok(evaluate(
         "#rune\n\
@@ -167,7 +168,6 @@ fn rune_return_verdict_renders_html() {
         "{:?}",
         bundle.text_plain
     );
-    assert!(bundle.text_html.is_some());
 }
 
 // ---------------------------------------------------------------------------

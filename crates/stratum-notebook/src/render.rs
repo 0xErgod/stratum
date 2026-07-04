@@ -1,36 +1,37 @@
-//! Rendering: turning toolkit values into rich [`MimeBundle`]s.
+//! Rendering: turning toolkit values into [`MimeBundle`]s.
 //!
-//! Every renderer is *substrate-agnostic* — it produces a [`MimeBundle`] of
-//! `text/plain` (always), plus optional `text/html` and `image/svg+xml`. The
-//! Jupyter kernel (or any other front-end) maps those MIME keys onto its own
-//! display messages; nothing here knows about ZeroMQ or Jupyter.
+//! Every renderer produces a `text/plain` **ASCII listing** (always — copyable
+//! as-is by any front-end). When the session is in [`Repr::Latex`] a renderer
+//! *also* emits a `text/latex` payload in classic reflective rho-calculus
+//! notation, which a MathJax front-end typesets and which copies as either LaTeX
+//! source or an image. Diagrams were dropped in favour of listings, so there is
+//! no SVG output and no layout dependency.
 //!
-//! The one external dependency is `layout-rs`, a pure-Rust DOT parser + layout
-//! engine used to turn an [`Lts`]'s Graphviz `to_dot()` output into an inline
-//! SVG — no system Graphviz binary is required. If layout fails (or panics on
-//! some DOT it cannot handle) we fall back to the raw DOT in a `<pre>` block and
-//! never propagate the failure.
+//! Nothing here knows about ZeroMQ or Jupyter; the kernel maps the MIME keys
+//! onto its own display messages.
 
 use stratum::core::{canonicalize, Name, Proc};
 use stratum::equiv::Verdict;
 use stratum::logic::Checked;
-use stratum::lts::{format_name, format_proc, Lts};
-use stratum::syntax::{to_source, to_source_folded, Aliases};
+use stratum::lts::{format_name, Lts};
+use stratum::syntax::{
+    name_to_latex, to_latex, to_latex_folded, to_source, to_source_folded, Aliases,
+};
 use stratum::types::TypeError;
+
+use crate::Repr;
 
 /// A rendered cell result as a set of alternative MIME representations.
 ///
-/// `text_plain` is always present (the lowest-common-denominator fallback every
-/// front-end can show). `text_html` and `image_svg` are richer alternatives a
-/// capable front-end may prefer.
+/// `text_plain` is always present (an ASCII listing every front-end can show and
+/// the user can copy). `text_latex` is the optional richer alternative, emitted
+/// only in [`Repr::Latex`] mode.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MimeBundle {
     /// `text/plain` representation. Always populated.
     pub text_plain: String,
-    /// Optional `text/html` representation.
-    pub text_html: Option<String>,
-    /// Optional `image/svg+xml` representation.
-    pub image_svg: Option<String>,
+    /// Optional `text/latex` representation (classic rho-calculus notation).
+    pub text_latex: Option<String>,
 }
 
 impl MimeBundle {
@@ -39,14 +40,14 @@ impl MimeBundle {
     pub fn plain(text: impl Into<String>) -> Self {
         Self {
             text_plain: text.into(),
-            text_html: None,
-            image_svg: None,
+            text_latex: None,
         }
     }
 }
 
 /// Escape the five XML/HTML metacharacters so arbitrary process source can be
-/// embedded in `text/html` safely.
+/// embedded in `text/html` safely. (Cell output is HTML-free, but the
+/// interactive `inspect` docs still build small HTML snippets.)
 #[must_use]
 pub fn escape_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -63,212 +64,236 @@ pub fn escape_html(s: &str) -> String {
     out
 }
 
-/// Render a process as the *transparency pair*: the folded surface form (named
-/// channels) alongside the expanded pure core (raw quoted-process names).
-///
-/// `text/plain` is the folded surface form; `text/html` shows both views so the
-/// reader can see exactly what the sugar desugars to.
+/// Wrap a bare math expression as a `text/latex` display-math payload.
+pub(crate) fn display_math(inner: &str) -> String {
+    format!("$$\n{inner}\n$$")
+}
+
+/// Escape the LaTeX-special characters so a toolkit-generated status string is
+/// safe inside a `\text{…}` box.
+pub(crate) fn escape_latex_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str(r"\textbackslash{}"),
+            '_' | '&' | '%' | '$' | '#' | '{' | '}' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '~' => out.push_str(r"\textasciitilde{}"),
+            '^' => out.push_str(r"\textasciicircum{}"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// A `text/latex` payload for a short status line: the text boxed in math mode.
+fn latex_status(plain: &str) -> Option<String> {
+    Some(display_math(&format!(r"\text{{{}}}", escape_latex_text(plain))))
+}
+
+/// Fold a channel [`Name`] to its source alias for the ASCII LTS listing,
+/// falling back to the compact raw form when it has no alias.
+fn fold_name_ascii(name: &Name, aliases: &Aliases) -> String {
+    aliases
+        .get(name)
+        .map_or_else(|| format_name(name), str::to_string)
+}
+
+/// Render a process as its **surface form** only (the core is available on
+/// demand via `#expand`). ASCII plain always; a classic-rho `text/latex` form in
+/// LaTeX mode.
 #[must_use]
-pub fn render_proc(p: &Proc, aliases: &Aliases) -> MimeBundle {
-    let folded = to_source_folded(p, aliases);
-    let core = to_source(&canonicalize(p));
-    let html = format!(
-        "<div class=\"stratum-proc\">\
-           <div><span style=\"color:#888\">surface&nbsp;</span><code>{}</code></div>\
-           <div><span style=\"color:#888\">core&nbsp;&nbsp;&nbsp;&nbsp;</span><code>{}</code></div>\
-         </div>",
-        escape_html(&folded),
-        escape_html(&core),
-    );
+pub fn render_proc(p: &Proc, aliases: &Aliases, repr: Repr) -> MimeBundle {
     MimeBundle {
-        text_plain: folded,
-        text_html: Some(html),
-        image_svg: None,
+        text_plain: to_source_folded(p, aliases),
+        text_latex: match repr {
+            Repr::Ascii => None,
+            Repr::Latex => Some(display_math(&to_latex_folded(p, aliases))),
+        },
     }
 }
 
-/// Render an LTS: a state/transition summary in `text/plain`, and the graph as
-/// an inline SVG (via `layout-rs`) when it can be laid out, else the raw DOT in
-/// a `<pre>` fallback.
+/// Render a process's desugared **pure core** (the `#expand` view): raw surface
+/// syntax in ASCII, classic-rho `\ulcorner…\urcorner` notation in LaTeX.
 #[must_use]
-pub fn render_lts(lts: &Lts) -> MimeBundle {
+pub fn render_core(p: &Proc, repr: Repr) -> MimeBundle {
+    let core = canonicalize(p);
+    MimeBundle {
+        text_plain: to_source(&core),
+        text_latex: match repr {
+            Repr::Ascii => None,
+            Repr::Latex => Some(display_math(&to_latex(&core))),
+        },
+    }
+}
+
+/// Render an LTS as a **listing**: a state/transition summary plus one line per
+/// state (its folded process) and one per transition (`s_i --chan--> s_j`).
+#[must_use]
+pub fn render_lts(lts: &Lts, aliases: &Aliases, repr: Repr) -> MimeBundle {
     let truncated = if lts.is_truncated() {
         " (truncated — state bound hit)"
     } else {
         ""
     };
-    let summary = format!(
-        "LTS: {} states, {} transitions{}",
+    let mut plain = format!(
+        "LTS: {} states, {} transitions{}\n",
         lts.num_states(),
         lts.num_transitions(),
         truncated,
     );
-    let dot = lts.to_dot();
-    match dot_to_svg(&dot) {
-        Some(svg) => MimeBundle {
-            text_plain: summary,
-            text_html: None,
-            image_svg: Some(svg),
-        },
-        None => MimeBundle {
-            text_plain: summary,
-            text_html: Some(format!(
-                "<pre class=\"stratum-dot\">{}</pre>",
-                escape_html(&dot)
-            )),
-            image_svg: None,
-        },
+    for i in 0..lts.num_states() {
+        plain.push_str(&format!("  s{i}  {}\n", to_source_folded(lts.state(i), aliases)));
     }
+    for from in 0..lts.num_states() {
+        for t in lts.transitions(from) {
+            plain.push_str(&format!(
+                "  s{from} --{}--> s{}\n",
+                fold_name_ascii(&t.label, aliases),
+                t.target,
+            ));
+        }
+    }
+
+    let text_latex = match repr {
+        Repr::Ascii => None,
+        Repr::Latex => {
+            let state_rows: Vec<String> = (0..lts.num_states())
+                .map(|i| format!(r"s_{{{i}}} & {}", to_latex_folded(lts.state(i), aliases)))
+                .collect();
+            let states = format!(r"\begin{{array}}{{rl}}{}\end{{array}}", state_rows.join(r" \\ "));
+            let mut edges: Vec<String> = Vec::new();
+            for from in 0..lts.num_states() {
+                for t in lts.transitions(from) {
+                    edges.push(format!(
+                        r"s_{{{from}}} \xrightarrow{{{}}} s_{{{}}}",
+                        name_to_latex(&t.label, Some(aliases)),
+                        t.target,
+                    ));
+                }
+            }
+            // Stack the state table over the transitions in one single-column array.
+            let body = if edges.is_empty() {
+                states
+            } else {
+                format!(r"\begin{{array}}{{l}}{states} \\ {}\end{{array}}", edges.join(r" \quad "))
+            };
+            Some(display_math(&body))
+        }
+    };
+
+    MimeBundle { text_plain: plain, text_latex }
 }
 
-/// Render an equivalence [`Verdict`] as styled HTML.
+/// Render an equivalence [`Verdict`].
 #[must_use]
-pub fn render_verdict(v: &Verdict) -> MimeBundle {
-    let (plain, color, detail) = match v {
-        Verdict::Equivalent => ("Equivalent".to_string(), "#2e7d32", String::new()),
-        Verdict::Distinguished(reason) => (
-            format!("Distinguished: {reason}"),
-            "#c62828",
-            format!(" — {}", escape_html(reason)),
-        ),
-        Verdict::Inconclusive(reason) => (
-            format!("Inconclusive: {reason}"),
-            "#f9a825",
-            format!(" — {}", escape_html(reason)),
-        ),
+pub fn render_verdict(v: &Verdict, repr: Repr) -> MimeBundle {
+    let plain = match v {
+        Verdict::Equivalent => "Equivalent".to_string(),
+        Verdict::Distinguished(reason) => format!("Distinguished: {reason}"),
+        Verdict::Inconclusive(reason) => format!("Inconclusive: {reason}"),
     };
-    let label = match v {
-        Verdict::Equivalent => "Equivalent",
-        Verdict::Distinguished(_) => "Distinguished",
-        Verdict::Inconclusive(_) => "Inconclusive",
+    let text_latex = match repr {
+        Repr::Ascii => None,
+        Repr::Latex => match v {
+            Verdict::Equivalent => Some(display_math(r"P \sim Q")),
+            Verdict::Distinguished(reason) => Some(display_math(&format!(
+                r"P \not\sim Q \quad (\text{{{}}})",
+                escape_latex_text(reason)
+            ))),
+            Verdict::Inconclusive(_) => latex_status(&plain),
+        },
     };
-    let html = format!(
-        "<div class=\"stratum-verdict\" style=\"color:{color}\"><b>{label}</b>{detail}</div>"
-    );
-    MimeBundle {
-        text_plain: plain,
-        text_html: Some(html),
-        image_svg: None,
-    }
+    MimeBundle { text_plain: plain, text_latex }
 }
 
 /// Render a model-checking [`Checked`] result (holds + whether the LTS was fully
-/// explored) as styled HTML.
+/// explored).
 #[must_use]
-pub fn render_checked(c: Checked) -> MimeBundle {
-    let (verdict, color) = if c.holds {
-        ("Holds", "#2e7d32")
-    } else {
-        ("Does not hold", "#c62828")
-    };
+pub fn render_checked(c: Checked, repr: Repr) -> MimeBundle {
+    let verdict = if c.holds { "Holds" } else { "Does not hold" };
     let exactness = if c.exact {
         "exact"
     } else {
         "under-approximate (LTS truncated)"
     };
     let plain = format!("{verdict} ({exactness})");
-    let html = format!(
-        "<div class=\"stratum-checked\" style=\"color:{color}\"><b>{verdict}</b> \
-         <span style=\"color:#888\">({exactness})</span></div>"
-    );
-    MimeBundle {
-        text_plain: plain,
-        text_html: Some(html),
-        image_svg: None,
-    }
+    let text_latex = match repr {
+        Repr::Ascii => None,
+        Repr::Latex => {
+            let sym = if c.holds { r"\models" } else { r"\not\models" };
+            Some(display_math(&format!(
+                r"{sym} \quad (\text{{{}}})",
+                escape_latex_text(exactness)
+            )))
+        }
+    };
+    MimeBundle { text_plain: plain, text_latex }
 }
 
-/// Render a typecheck outcome as HTML: `Ok` or the first [`TypeError`].
+/// Render a typecheck outcome: `Ok` or the first [`TypeError`].
 #[must_use]
-pub fn render_typecheck(result: &Result<(), TypeError>) -> MimeBundle {
-    match result {
-        Ok(()) => MimeBundle {
-            text_plain: "well-typed".to_string(),
-            text_html: Some("<div style=\"color:#2e7d32\"><b>well-typed</b></div>".to_string()),
-            image_svg: None,
-        },
-        Err(e) => {
-            let msg = e.to_string();
-            MimeBundle {
-                text_plain: format!("type error: {msg}"),
-                text_html: Some(format!(
-                    "<div style=\"color:#c62828\"><b>type error</b> — {}</div>",
-                    escape_html(&msg)
-                )),
-                image_svg: None,
-            }
-        }
-    }
+pub fn render_typecheck(result: &Result<(), TypeError>, repr: Repr) -> MimeBundle {
+    let plain = match result {
+        Ok(()) => "well-typed".to_string(),
+        Err(e) => format!("type error: {e}"),
+    };
+    let text_latex = match repr {
+        Repr::Ascii => None,
+        Repr::Latex => latex_status(&plain),
+    };
+    MimeBundle { text_plain: plain, text_latex }
 }
 
 /// Render a run — a sequence of `(firing channel, state index)` steps produced
-/// by a witness / counterexample / trace — as an HTML table over the LTS, with a
-/// `text/plain` fallback.
+/// by a witness / counterexample / trace — as an ASCII listing over the LTS,
+/// plus a LaTeX step array in LaTeX mode.
 #[must_use]
-pub fn render_run(title: &str, run: &[(Name, usize)], lts: &Lts) -> MimeBundle {
-    // text/plain
+pub fn render_run(
+    title: &str,
+    run: &[(Name, usize)],
+    lts: &Lts,
+    aliases: &Aliases,
+    repr: Repr,
+) -> MimeBundle {
     let mut plain = format!("{title}: {} step(s)\n", run.len());
-    plain.push_str(&format!("  s{}\n", lts.initial()));
+    plain.push_str(&format!(
+        "  s{}  {}\n",
+        lts.initial(),
+        to_source_folded(lts.state(lts.initial()), aliases),
+    ));
     for (chan, state) in run {
         plain.push_str(&format!(
             "  --{}--> s{}  {}\n",
-            format_name(chan),
+            fold_name_ascii(chan, aliases),
             state,
-            format_proc(lts.state(*state)),
+            to_source_folded(lts.state(*state), aliases),
         ));
     }
 
-    // text/html
-    let mut rows = String::new();
-    rows.push_str(&format!(
-        "<tr><td>0</td><td><i>start</i></td><td>s{}</td><td><code>{}</code></td></tr>",
-        lts.initial(),
-        escape_html(&format_proc(lts.state(lts.initial()))),
-    ));
-    for (i, (chan, state)) in run.iter().enumerate() {
-        rows.push_str(&format!(
-            "<tr><td>{}</td><td><code>{}</code></td><td>s{}</td><td><code>{}</code></td></tr>",
-            i + 1,
-            escape_html(&format_name(chan)),
-            state,
-            escape_html(&format_proc(lts.state(*state))),
-        ));
-    }
-    let html = format!(
-        "<div class=\"stratum-run\"><b>{}</b> — {} step(s)\
-         <table border=\"1\" cellpadding=\"4\" style=\"border-collapse:collapse\">\
-         <tr><th>#</th><th>channel</th><th>state</th><th>process</th></tr>{}</table></div>",
-        escape_html(title),
-        run.len(),
-        rows,
-    );
-    MimeBundle {
-        text_plain: plain,
-        text_html: Some(html),
-        image_svg: None,
-    }
-}
+    let text_latex = match repr {
+        Repr::Ascii => None,
+        Repr::Latex => {
+            let mut rows = vec![format!(
+                r"& s_{{{}}} & {}",
+                lts.initial(),
+                to_latex_folded(lts.state(lts.initial()), aliases),
+            )];
+            for (chan, state) in run {
+                rows.push(format!(
+                    r"\xrightarrow{{{}}} & s_{{{state}}} & {}",
+                    name_to_latex(chan, Some(aliases)),
+                    to_latex_folded(lts.state(*state), aliases),
+                ));
+            }
+            Some(display_math(&format!(
+                r"\begin{{array}}{{rll}}{}\end{{array}}",
+                rows.join(r" \\ ")
+            )))
+        }
+    };
 
-/// Turn a Graphviz DOT string into an SVG string using the pure-Rust
-/// `layout-rs` engine. Returns `None` if the DOT cannot be parsed or laid out
-/// (including if `layout-rs` panics on it) — callers fall back to raw DOT.
-#[must_use]
-pub fn dot_to_svg(dot: &str) -> Option<String> {
-    use layout::backends::svg::SVGWriter;
-    use layout::gv::{DotParser, GraphBuilder};
-
-    // `layout-rs` can panic on some DOT it does not fully support; contain it so
-    // a rendering hiccup never brings down cell evaluation.
-    let dot = dot.to_string();
-    let result = std::panic::catch_unwind(move || {
-        let mut parser = DotParser::new(&dot);
-        let graph = parser.process().ok()?;
-        let mut builder = GraphBuilder::new();
-        builder.visit_graph(&graph);
-        let mut vg = builder.get();
-        let mut svg = SVGWriter::new();
-        vg.do_it(false, false, false, &mut svg);
-        Some(svg.finalize())
-    });
-    result.ok().flatten()
+    MimeBundle { text_plain: plain, text_latex }
 }

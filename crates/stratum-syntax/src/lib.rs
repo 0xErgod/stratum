@@ -121,7 +121,9 @@ mod parser;
 mod render;
 mod resolve;
 
-pub use render::{to_source, to_source_folded};
+pub use render::{
+    latex_ident, name_to_latex, to_latex, to_latex_folded, to_source, to_source_folded,
+};
 pub use stratum_core::{Name, Proc};
 
 use std::collections::HashMap;

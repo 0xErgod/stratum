@@ -339,23 +339,22 @@ async fn drive(ports: ConnPorts) {
     assert_eq!(reply.content["status"], "ok");
     assert_eq!(reply.content["execution_count"], 1);
 
-    // ---- #explore -> display_data carrying image/svg+xml ------------------
-    // Proves the wiring end to end: the notebook core lays the trace LTS out to
-    // an inline SVG and the kernel forwards it under the image/svg+xml MIME key.
+    // ---- #explore -> display_data carrying the LTS listing ----------------
+    // Proves the wiring end to end: the notebook core builds the trace LTS as a
+    // plain-text states + transitions listing and the kernel forwards it under
+    // the text/plain MIME key.
     let (reply, io) = execute(&mut shell, &mut iopub, &fe, "#explore _1 -> g", false).await;
     assert_eq!(reply.content["status"], "ok");
     assert_eq!(reply.content["execution_count"], 2);
-    let svg_display = io
+    let listing = io
         .iter()
         .find(|m| {
             m.header["msg_type"] == "display_data"
-                && m.content["data"]["image/svg+xml"].as_str().is_some()
+                && m.content["data"]["text/plain"].as_str().is_some()
         })
-        .expect("#explore must emit a display_data with image/svg+xml");
-    let svg = svg_display.content["data"]["image/svg+xml"]
-        .as_str()
-        .unwrap();
-    assert!(svg.contains("<svg"), "not an SVG payload: {svg:.60}");
+        .expect("#explore must emit a display_data with a text/plain listing");
+    let text = listing.content["data"]["text/plain"].as_str().unwrap();
+    assert!(text.contains("states"), "not an LTS listing: {text:.80}");
 
     // ---- a parse-error cell -> error reply + error broadcast --------------
     let (reply, io) = execute(&mut shell, &mut iopub, &fe, "new a in a!(", false).await;

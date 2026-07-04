@@ -76,11 +76,14 @@ const DIRECTIVES: &[&str] = &[
     "step",
     "trace",
     "typecheck",
+    "ascii",
+    "latex",
+    "repr",
     "help",
 ];
 
 /// Every `#`-meta keyword offered while completing a meta line: `define`, the
-/// directives, and the `rune` script cell.
+/// directives, the representation modes, and the `rune` script cell.
 const META_KEYWORDS: &[&str] = &[
     "define",
     "explore",
@@ -92,6 +95,9 @@ const META_KEYWORDS: &[&str] = &[
     "step",
     "trace",
     "typecheck",
+    "ascii",
+    "latex",
+    "repr",
     "rune",
     "help",
 ];
@@ -576,6 +582,19 @@ fn directive_doc(name: &str) -> Inspection {
         "typecheck" => {
             "#typecheck <p> [with a:Ty, b:Ty]\n\
              Channel-sort typecheck a process under an optional environment."
+        }
+        "ascii" => {
+            "#ascii\n\
+             Switch output to plain ASCII listings only (the session default)."
+        }
+        "latex" => {
+            "#latex\n\
+             Switch output to classic rho-calculus LaTeX (text/latex) alongside the \
+             ASCII listing — a MathJax front-end typesets it, copyable as source or image."
+        }
+        "repr" => {
+            "#repr\n\
+             Report the current output representation (`#ascii` / `#latex` set it)."
         }
         "help" => {
             "#help\n\

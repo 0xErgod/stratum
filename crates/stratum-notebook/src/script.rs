@@ -73,11 +73,11 @@ use stratum::core::{canonicalize, is_normal_form, step, Name, Proc};
 use stratum::equiv::{strong_barbed_bisimilar, weak_barbed_bisimilar, Verdict};
 use stratum::logic::{counterexample, holds_checked, witness};
 use stratum::lts::Lts;
-use stratum::syntax::{parse_with_aliases, to_source};
+use stratum::syntax::{parse_with_aliases, to_source, Aliases};
 
 use crate::formula::parse_formula;
 use crate::render::{render_lts, render_proc, render_verdict, MimeBundle};
-use crate::{CellError, CellOutcome, Namespace, Obj, Reduction};
+use crate::{CellError, CellOutcome, Namespace, Obj, Reduction, Repr};
 
 /// The default per-instruction execution budget for a `#rune` cell.
 ///
@@ -701,15 +701,17 @@ fn render_value(value: &Value, shared: &SharedNs) -> Option<MimeBundle> {
     if rune::from_value::<()>(value.clone()).is_ok() {
         return None;
     }
+    let repr = lock(shared).repr();
     if let Ok(l) = rune::from_value::<ScLts>(value.clone()) {
-        return Some(render_sclts(&l));
+        let aliases = lock(shared).aliases().clone();
+        return Some(render_sclts(&l, &aliases, repr));
     }
     if let Ok(p) = rune::from_value::<ScProc>(value.clone()) {
         let aliases = lock(shared).aliases().clone();
-        return Some(render_proc(&p.0, &aliases));
+        return Some(render_proc(&p.0, &aliases, repr));
     }
     if let Ok(v) = rune::from_value::<ScVerdict>(value.clone()) {
-        return Some(render_verdict(&v.0));
+        return Some(render_verdict(&v.0, repr));
     }
     if let Ok(b) = rune::from_value::<bool>(value.clone()) {
         return Some(MimeBundle::plain(b.to_string()));
@@ -727,10 +729,17 @@ fn render_value(value: &Value, shared: &SharedNs) -> Option<MimeBundle> {
 }
 
 /// Render an [`ScLts`] return value, appending the reduction caveat if any.
-fn render_sclts(l: &ScLts) -> MimeBundle {
-    let mut bundle = render_lts(&l.lts);
+fn render_sclts(l: &ScLts, aliases: &Aliases, repr: Repr) -> MimeBundle {
+    let mut bundle = render_lts(&l.lts, aliases, repr);
     if let Some(caveat) = l.reduction.caveat() {
         bundle.text_plain = format!("{}\n[caveat] {caveat}", bundle.text_plain);
+        if let Some(latex) = &bundle.text_latex {
+            let note = crate::render::display_math(&format!(
+                r"\text{{caveat: {}}}",
+                crate::render::escape_latex_text(caveat)
+            ));
+            bundle.text_latex = Some(format!("{latex}\n{note}"));
+        }
     }
     bundle
 }

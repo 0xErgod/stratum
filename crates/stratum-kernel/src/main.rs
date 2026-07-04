@@ -537,11 +537,8 @@ fn mime_data(bundle: &MimeBundle) -> Value {
         "text/plain".to_string(),
         Value::String(bundle.text_plain.clone()),
     );
-    if let Some(html) = &bundle.text_html {
-        data.insert("text/html".to_string(), Value::String(html.clone()));
-    }
-    if let Some(svg) = &bundle.image_svg {
-        data.insert("image/svg+xml".to_string(), Value::String(svg.clone()));
+    if let Some(latex) = &bundle.text_latex {
+        data.insert("text/latex".to_string(), Value::String(latex.clone()));
     }
     Value::Object(data)
 }

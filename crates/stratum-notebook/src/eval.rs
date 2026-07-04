@@ -10,16 +10,16 @@
 use stratum::core::{canonicalize, step_labeled, Name, Proc};
 use stratum::equiv::{strong_barbed_bisimilar, weak_barbed_bisimilar};
 use stratum::logic::{counterexample, holds_checked, witness};
-use stratum::lts::Lts;
-use stratum::syntax::{expand, parse_with_aliases, to_source, ParseError};
+use stratum::lts::{format_name, Lts};
+use stratum::syntax::{name_to_latex, parse_with_aliases, to_latex, to_source, ParseError};
 use stratum::types::{check as typecheck, Env, Ty};
 
 use crate::formula::parse_formula;
 use crate::render::{
-    render_checked, render_lts, render_proc, render_run, render_typecheck, render_verdict,
-    MimeBundle,
+    display_math, render_checked, render_core, render_lts, render_proc, render_run,
+    render_typecheck, render_verdict, MimeBundle,
 };
-use crate::{default_observations, CellError, CellOutcome, Namespace, Obj, Reduction};
+use crate::{default_observations, CellError, CellOutcome, Namespace, Obj, Reduction, Repr};
 
 /// The default bounded-exploration state cap for directives that build an LTS.
 const DEFAULT_BOUND: usize = 1000;
@@ -128,12 +128,27 @@ fn run_meta(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError
         "step" => dir_step(after.trim(), ns),
         "trace" => dir_trace(after.trim(), ns),
         "typecheck" => dir_typecheck(after.trim(), ns),
+        "ascii" => dir_repr(Some(Repr::Ascii), ns),
+        "latex" => dir_repr(Some(Repr::Latex), ns),
+        "repr" => dir_repr(None, ns),
         "help" => Ok(vec![help_bundle()]),
         other => Err(CellError::new(
             "DirectiveError",
             format!("unknown directive `#{other}`. Try `#help`."),
         )),
     }
+}
+
+/// `#ascii` / `#latex` set the session output representation; `#repr` (a `None`
+/// argument) just reports the current mode.
+fn dir_repr(mode: Option<Repr>, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
+    if let Some(mode) = mode {
+        ns.set_repr(mode);
+    }
+    Ok(vec![MimeBundle::plain(format!(
+        "representation: {}",
+        ns.repr().label()
+    ))])
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +184,7 @@ fn run_dsl(source: &str, name: Option<String>, ns: &mut Namespace) -> Result<Vec
     guard_nesting(source)?;
     let (proc, aliases) = parse_with_aliases(source).map_err(|e| parse_error(source, &e))?;
     ns.absorb_aliases(&proc, aliases);
-    let bundle = render_proc(&proc, ns.aliases());
+    let bundle = render_proc(&proc, ns.aliases(), ns.repr());
     let name = name.unwrap_or_else(|| ns.next_auto_name());
     ns.insert(name, Obj::Proc(proc));
     Ok(vec![bundle])
@@ -202,7 +217,7 @@ fn dir_explore(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
         (Lts::explore(&proc, bound), Reduction::None)
     };
 
-    let bundle = apply_caveat(render_lts(&lts), reduction);
+    let bundle = apply_caveat(render_lts(&lts, ns.aliases(), ns.repr()), reduction);
     if let Some(name) = bind {
         ns.insert(name, Obj::Lts { lts, reduction });
     }
@@ -215,20 +230,8 @@ fn dir_expand(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErr
     if target.is_empty() {
         return arity_err("expand", "#expand <procname|DSL>");
     }
-    let core = if let Some(proc) = ns.get_proc(target) {
-        to_source(&canonicalize(proc))
-    } else {
-        guard_nesting(target)?;
-        expand(target).map_err(|e| parse_error(target, &e))?
-    };
-    Ok(vec![MimeBundle {
-        text_plain: core.clone(),
-        text_html: Some(format!(
-            "<div class=\"stratum-expand\"><span style=\"color:#888\">core&nbsp;</span><code>{}</code></div>",
-            crate::render::escape_html(&core)
-        )),
-        image_svg: None,
-    }])
+    let proc = resolve_proc(target, ns)?;
+    Ok(vec![render_core(&proc, ns.repr())])
 }
 
 /// `#check <formula> on <ltsname>`
@@ -240,7 +243,7 @@ fn dir_check(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
     reject_ex_on_reduced(&compiled, reduction)?;
     let label = compiled.labelling();
     let checked = holds_checked(lts, &compiled.formula, &label);
-    Ok(vec![apply_caveat(render_checked(checked), reduction)])
+    Ok(vec![apply_caveat(render_checked(checked, ns.repr()), reduction)])
 }
 
 /// `#witness <formula> on <ltsname>`
@@ -253,7 +256,7 @@ fn dir_witness(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
     reject_ex_on_reduced(&compiled, reduction)?;
     let label = compiled.labelling();
     let bundle = match witness(lts, &compiled.formula, &label) {
-        Some(run) => render_run("witness", &run, lts),
+        Some(run) => render_run("witness", &run, lts, ns.aliases(), ns.repr()),
         None => MimeBundle::plain("no witness: the goal is unreachable in the explored LTS"),
     };
     Ok(vec![apply_caveat(bundle, reduction)])
@@ -272,7 +275,7 @@ fn dir_counterexample(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>,
     reject_ex_on_reduced(&compiled, reduction)?;
     let label = compiled.labelling();
     let bundle = match counterexample(lts, &compiled.formula, &label) {
-        Some(run) => render_run("counterexample", &run, lts),
+        Some(run) => render_run("counterexample", &run, lts, ns.aliases(), ns.repr()),
         None => {
             MimeBundle::plain("no counterexample: the invariant holds throughout the explored LTS")
         }
@@ -309,7 +312,7 @@ fn dir_bisim(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
     } else {
         strong_barbed_bisimilar(&p, &q, &obs, bound)
     };
-    Ok(vec![render_verdict(&verdict)])
+    Ok(vec![render_verdict(&verdict, ns.repr())])
 }
 
 /// `#step <procname|inline DSL>` — the one-step reducts.
@@ -324,29 +327,33 @@ fn dir_step(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError
         return Ok(vec![MimeBundle::plain("no reductions (terminal)")]);
     }
     let mut plain = format!("{} one-step reduct(s):\n", steps.len());
-    let mut rows = String::new();
     for (i, s) in steps.iter().enumerate() {
-        let chan = stratum::lts::format_name(&s.channel);
-        let reduct = to_source(&canonicalize(&s.reduct));
-        plain.push_str(&format!("  [{i}] on {chan}: {reduct}\n"));
-        rows.push_str(&format!(
-            "<tr><td>{i}</td><td><code>{}</code></td><td><code>{}</code></td></tr>",
-            crate::render::escape_html(&chan),
-            crate::render::escape_html(&reduct),
+        plain.push_str(&format!(
+            "  [{i}] on {}: {}\n",
+            format_name(&s.channel),
+            to_source(&canonicalize(&s.reduct)),
         ));
     }
-    let html = format!(
-        "<div class=\"stratum-step\"><b>{} one-step reduct(s)</b>\
-         <table border=\"1\" cellpadding=\"4\" style=\"border-collapse:collapse\">\
-         <tr><th>#</th><th>channel</th><th>reduct</th></tr>{}</table></div>",
-        steps.len(),
-        rows,
-    );
-    Ok(vec![MimeBundle {
-        text_plain: plain,
-        text_html: Some(html),
-        image_svg: None,
-    }])
+    let text_latex = match ns.repr() {
+        Repr::Ascii => None,
+        Repr::Latex => {
+            let rows: Vec<String> = steps
+                .iter()
+                .map(|s| {
+                    format!(
+                        r"\text{{on }} {} & {}",
+                        name_to_latex(&s.channel, None),
+                        to_latex(&canonicalize(&s.reduct)),
+                    )
+                })
+                .collect();
+            Some(display_math(&format!(
+                r"\begin{{array}}{{rl}}{}\end{{array}}",
+                rows.join(r" \\ ")
+            )))
+        }
+    };
+    Ok(vec![MimeBundle { text_plain: plain, text_latex }])
 }
 
 /// `#trace <ltsname>` — a sample run from the initial state.
@@ -376,7 +383,7 @@ fn dir_trace(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
             "trace: the initial state is terminal (no transitions)",
         )]);
     }
-    Ok(vec![render_run("trace", &run, lts)])
+    Ok(vec![render_run("trace", &run, lts, ns.aliases(), ns.repr())])
 }
 
 /// `#typecheck <procname|inline DSL> [with a:Ty, b:Ty, ...]`
@@ -394,7 +401,7 @@ fn dir_typecheck(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, Cell
         None => Env::new(),
     };
     let result = typecheck(&env, &proc);
-    Ok(vec![render_typecheck(&result)])
+    Ok(vec![render_typecheck(&result, ns.repr())])
 }
 
 // ---------------------------------------------------------------------------
@@ -470,14 +477,15 @@ fn reject_ex_on_reduced(
 fn apply_caveat(mut bundle: MimeBundle, reduction: Reduction) -> MimeBundle {
     if let Some(caveat) = reduction.caveat() {
         bundle.text_plain = format!("{}\n[caveat] {caveat}", bundle.text_plain);
-        let extra = format!(
-            "<div class=\"stratum-caveat\" style=\"color:#f9a825\"><small>caveat: {}</small></div>",
-            crate::render::escape_html(caveat)
-        );
-        bundle.text_html = Some(match bundle.text_html {
-            Some(html) => format!("{html}{extra}"),
-            None => extra,
-        });
+        // The caveat must ride along with the LaTeX view too, so a MathJax
+        // front-end never shows a reduced verdict without its qualification.
+        if let Some(latex) = &bundle.text_latex {
+            let note = display_math(&format!(
+                r"\text{{caveat: {}}}",
+                crate::render::escape_latex_text(caveat)
+            ));
+            bundle.text_latex = Some(format!("{latex}\n{note}"));
+        }
     }
     bundle
 }
@@ -685,10 +693,17 @@ Stratum notebook cells:
   #trace <lts>                                    a sample run
   #typecheck <p> [with a:Ty, b:Ty]               channel-sort typecheck
   #rune <newline> <script>                       run an embedded Rune script
+  #ascii / #latex                                output representation (`#repr` shows current)
   #help                                           this list
 
 #define: `#define hs` on its own line names the process built from the Stratum
 code on the lines below; `#define e @0!(0)` binds an inline one-liner.
+
+Output: every result is a copyable ASCII listing. `#latex` additionally emits a
+`text/latex` view in classic reflective rho-calculus notation (a MathJax
+front-end typesets it, copyable as source or image); `#ascii` (the default)
+switches back to plain listings only. Processes render as their surface form —
+`#expand <p>` shows the desugared pure core on demand.
 
 #rune: the rest of the cell is a Rune script (an implicit `pub fn main()`) with
 a curated `stratum` module bound in and this session's bindings shared. Free fns:
@@ -709,13 +724,5 @@ Reduced LTSs (`#explore ... por` / `sym=...`) preserve only a fragment of
 the logic: `#check`/`#witness`/`#counterexample` REJECT the `EX` (next-time)
 modality on them, and other verdicts carry a caveat. Use plain `#explore`
 (no por/sym) to check next-time properties.";
-    let html = format!(
-        "<pre class=\"stratum-help\">{}</pre>",
-        crate::render::escape_html(plain)
-    );
-    MimeBundle {
-        text_plain: plain.to_string(),
-        text_html: Some(html),
-        image_svg: None,
-    }
+    MimeBundle::plain(plain)
 }
