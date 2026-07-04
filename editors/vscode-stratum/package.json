@@ -1,0 +1,55 @@
+{
+  "name": "vscode-stratum",
+  "displayName": "Stratum",
+  "description": "Syntax highlighting for the Stratum reflective higher-order (rho) calculus surface syntax (.strat files and Stratum notebook cells).",
+  "version": "0.1.0",
+  "publisher": "stratum",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/0xErgod/stratum",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/0xErgod/stratum.git",
+    "directory": "editors/vscode-stratum"
+  },
+  "keywords": [
+    "stratum",
+    "rho-calculus",
+    "syntax-highlighting",
+    "textmate"
+  ],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "stratum",
+        "aliases": [
+          "Stratum",
+          "stratum"
+        ],
+        "extensions": [
+          ".strat"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "stratum",
+        "scopeName": "source.stratum",
+        "path": "./syntaxes/stratum.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "node test/tokenize.test.mjs"
+  },
+  "devDependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}
