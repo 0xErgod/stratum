@@ -37,7 +37,7 @@
 //! the label carried on the key.
 
 use stratum_core::{canonicalize_name, name_equiv, subst_semantic, Name, Proc};
-use tracing::{debug, trace};
+use tracing::{debug, debug_span, trace};
 
 use crate::flatten;
 
@@ -116,6 +116,10 @@ fn initial_state(start: &Proc) -> Vec<Tagged> {
 /// occurrence pair is a distinct event, even when two share a label. The output
 /// and input consumed are dropped from the successor; the residue's components
 /// are appended, tagged as [`OccKey::Born`] of the new event.
+///
+/// Each candidate carries its *full* successor state so a caller that branches
+/// (the trace enumeration of later phases) can step any of them; the linear
+/// [`run_events`] driver uses only the first.
 pub(crate) fn enabled_events(state: &[Tagged]) -> Vec<(Event, Vec<Tagged>)> {
     let mut out = Vec::new();
     for (i, (p_i, out_occ)) in state.iter().enumerate() {
@@ -162,13 +166,6 @@ pub(crate) fn enabled_events(state: &[Tagged]) -> Vec<(Event, Vec<Tagged>)> {
                 .collect();
             next.extend(born.into_iter().zip(produces.iter().cloned()));
 
-            trace!(
-                channel = ?key.channel,
-                out = ?key.out,
-                inp = ?key.inp,
-                produced = produces.len(),
-                "enabled event"
-            );
             out.push((Event { key, produces }, next));
         }
     }
@@ -187,6 +184,7 @@ pub fn run_events(start: &Proc, max_events: usize) -> (Vec<Event>, bool) {
     let mut events = Vec::new();
     loop {
         let enabled = enabled_events(&state);
+        trace!(enabled = enabled.len(), fired = events.len(), "stepping");
         if enabled.is_empty() {
             debug!(fired = events.len(), "run complete (terminal)");
             return (events, false);
@@ -196,7 +194,18 @@ pub fn run_events(start: &Proc, max_events: usize) -> (Vec<Event>, bool) {
             return (events, true);
         }
         let (ev, next) = enabled.into_iter().next().expect("non-empty");
-        debug!(channel = ?ev.key.channel, message = ?ev.key.message, "fired event");
+        // A span over the firing carrying the full event: its label and the
+        // occurrences it consumed and produced — the trace of *why* the run took
+        // this step, silent unless a subscriber is installed.
+        let _fired = debug_span!(
+            "fired",
+            channel = ?ev.key.channel,
+            message = ?ev.key.message,
+            out = ?ev.key.out,
+            inp = ?ev.key.inp,
+            produces = ?ev.produces,
+        )
+        .entered();
         events.push(ev);
         state = next;
     }
