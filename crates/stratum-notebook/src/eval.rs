@@ -65,6 +65,12 @@ pub fn evaluate(cell: &str, ns: &mut Namespace) -> CellOutcome {
     if trimmed.is_empty() {
         return CellOutcome::default();
     }
+    // `%%rune` is a cell magic that runs an embedded script and produces its own
+    // full outcome (captured stdout + a rendered return value + any error), so it
+    // is dispatched before the generic display/err mapping below.
+    if let Some(body) = strip_rune_magic(trimmed) {
+        return crate::script::run_rune(body, ns);
+    }
     let result = if trimmed.starts_with("%%") {
         run_magic(trimmed)
     } else if let Some(rest) = trimmed.strip_prefix('%') {
@@ -89,16 +95,27 @@ pub fn evaluate(cell: &str, ns: &mut Namespace) -> CellOutcome {
 fn run_magic(cell: &str) -> Result<Vec<MimeBundle>, CellError> {
     let body = cell.strip_prefix("%%").unwrap_or(cell);
     let (name, _rest) = split_first_word(body);
-    match name {
-        "rune" => Err(CellError::new(
-            "MagicError",
-            "cell magic `%%rune` is reserved for a later phase",
-        )),
-        other => Err(CellError::new(
-            "MagicError",
-            format!("unknown cell magic `%%{other}`"),
-        )),
+    // `%%rune` is intercepted earlier in `evaluate` (it produces a full
+    // `CellOutcome`), so it never reaches here; every other `%%` magic is unknown.
+    Err(CellError::new(
+        "MagicError",
+        format!("unknown cell magic `%%{name}`"),
+    ))
+}
+
+/// If `cell` is a `%%rune` magic, return the script body (everything after the
+/// `%%rune` line); otherwise `None`. Any text on the same line as `%%rune` is
+/// treated as part of the magic line and dropped.
+fn strip_rune_magic(cell: &str) -> Option<&str> {
+    let body = cell.strip_prefix("%%")?;
+    let (name, rest) = split_first_word(body);
+    if name != "rune" {
+        return None;
     }
+    Some(match rest.find('\n') {
+        Some(i) => &rest[i + 1..],
+        None => "",
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -677,7 +694,17 @@ Stratum notebook directives:
   %step <p>                                       one-step reducts
   %trace <lts>                                    a sample run
   %typecheck <p> [with a:Ty, b:Ty]               channel-sort typecheck
+  %%rune <newline> <script>                      run an embedded Rune script
   %help                                           this list
+
+%%rune: the rest of the cell is a Rune script (an implicit `pub fn main()`) with
+a curated `stratum` module bound in and this session's bindings shared. Free fns:
+stratum::parse(src) -> proc; stratum::explore(p, bound) / explore_por / _symmetric
+-> lts; stratum::check(lts, formula) -> bool (same formula language as %check);
+stratum::witness / counterexample(lts, f) -> [state indices]; stratum::bisim(p, q,
+weak) -> verdict; stratum::get(name) / set(name, value) read / write bindings.
+`println!(...)` is captured as the cell's stdout; the final expression is the
+display. A runaway script trips an instruction budget and errors cleanly.
 
 Formula fragment: EF/AG/AF/EG/EX φ, φ & ψ, φ | ψ, !φ, ( ), and the atomic
 proposition emits(<name>) — a top-level OUTPUT barb on the named channel.

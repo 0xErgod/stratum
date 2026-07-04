@@ -341,6 +341,35 @@ async fn drive(ports: ConnPorts) {
         "parse-error cell must broadcast an iopub error"
     );
 
+    // ---- a %%rune cell -> captured stdout stream + display_data -----------
+    // The embedded Rune script reads the `g` LTS bound by the earlier %explore
+    // through the shared session namespace, prints a line (captured into an
+    // iopub `stream`), and returns the LTS (forwarded as a display_data). Proves
+    // the scripting engine is wired end to end through the kernel.
+    let (reply, io) = execute(
+        &mut shell,
+        &mut iopub,
+        &fe,
+        "%%rune\nlet lts = stratum::get(\"g\");\nprintln!(\"g has {} states\", lts.num_states());\nlts\n",
+        false,
+    )
+    .await;
+    assert_eq!(reply.content["status"], "ok", "%%rune cell must succeed");
+    let stream = io
+        .iter()
+        .find(|m| m.header["msg_type"] == "stream")
+        .expect("%%rune println! must broadcast an iopub stream");
+    assert_eq!(stream.content["name"], "stdout");
+    assert!(
+        stream.content["text"].as_str().unwrap().contains("g has"),
+        "unexpected stream text: {}",
+        stream.content["text"]
+    );
+    assert!(
+        io.iter().any(|m| m.header["msg_type"] == "display_data"),
+        "%%rune returning an LTS must emit a display_data"
+    );
+
     // ---- complete_request -> complete_reply -------------------------------
     // `_1` and `g` are bound in the session by now (the DSL cell auto-named
     // `_1`, and `%explore ... -> g` bound the LTS). Completing `%exp` must
@@ -469,8 +498,8 @@ async fn drive(ports: ConnPorts) {
     let reply = decode_verified(recv(&mut shell).await);
     assert_eq!(reply.header["msg_type"], "execute_reply");
     assert_eq!(
-        reply.content["execution_count"], 4,
-        "count should advance to 4 (bad request never incremented it)"
+        reply.content["execution_count"], 5,
+        "count should advance to 5 (bad request never incremented it)"
     );
 
     // ---- clean shutdown via control --------------------------------------

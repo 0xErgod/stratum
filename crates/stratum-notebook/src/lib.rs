@@ -17,8 +17,11 @@
 //! * A line beginning with `%` is a **directive** — a thin wrapper over the
 //!   toolkit (`%explore`, `%check`, `%bisim`, `%typecheck`, …) that renders its
 //!   result and optionally binds it with `-> name`.
-//! * A line beginning with `%%` is a **cell magic** (`%%rune` is reserved for a
-//!   later phase).
+//! * A line beginning with `%%` is a **cell magic**. `%%rune` runs the rest of
+//!   the cell as an embedded [Rune](https://rune-rs.github.io/) script with a
+//!   curated `stratum` module and the session namespace shared in (see
+//!   [`script`]); its `println!` output and final value flow back as the cell's
+//!   stdout and display.
 //!
 //! Results come back as [`MimeBundle`]s (`text/plain` + optional `text/html` /
 //! `image/svg+xml`); the front-end maps those onto its own display messages.
@@ -28,6 +31,7 @@
 mod eval;
 mod formula;
 mod render;
+mod script;
 mod service;
 
 use std::collections::HashMap;
@@ -115,6 +119,8 @@ pub enum Obj {
     Checked(Checked),
     /// A boolean result.
     Bool(bool),
+    /// An integer result (e.g. a metric computed by a `%%rune` script).
+    Int(i64),
     /// Free-form text.
     Text(String),
 }
@@ -129,6 +135,7 @@ impl Obj {
             Obj::Verdict(_) => "verdict",
             Obj::Checked(_) => "checked",
             Obj::Bool(_) => "bool",
+            Obj::Int(_) => "int",
             Obj::Text(_) => "text",
         }
     }
