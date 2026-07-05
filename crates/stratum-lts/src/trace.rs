@@ -68,17 +68,7 @@ impl Trace {
             }
         }
 
-        let reach = closure(n, direct.iter().copied());
-
-        // Covering = direct edges with no intermediate: (a,b) is redundant when
-        // some c lies strictly between (a ≤ c ≤ b).
-        let mut leq: Vec<(usize, usize)> = Vec::new();
-        for &(a, b) in &direct {
-            let redundant = (0..n).any(|c| c != a && c != b && reach[a][c] && reach[c][b]);
-            if !redundant {
-                leq.push((a, b));
-            }
-        }
+        let leq = covering_relation(n, &direct);
         Trace { events: keys, leq }
     }
 
@@ -233,10 +223,28 @@ impl Enumerator {
     }
 }
 
+/// The covering relation (Hasse edges) of a dependency set: the transitive
+/// reduction of `direct` — each `(a, b)` in `direct` with no strict intermediate
+/// `c` (`a ≤ c ≤ b`). Shared by [`Trace::from_run`] and the event structure.
+pub(crate) fn covering_relation(
+    n: usize,
+    direct: &BTreeSet<(usize, usize)>,
+) -> Vec<(usize, usize)> {
+    let reach = closure(n, direct.iter().copied());
+    let mut leq = Vec::new();
+    for &(a, b) in direct {
+        let redundant = (0..n).any(|c| c != a && c != b && reach[a][c] && reach[c][b]);
+        if !redundant {
+            leq.push((a, b));
+        }
+    }
+    leq
+}
+
 /// Transitive closure of `edges` over `n` nodes, as a reachability matrix
 /// (`r[i][j]` = a directed path `i → … → j` of length ≥ 1 exists).
 #[allow(clippy::needless_range_loop)] // Floyd–Warshall reads across rows by index
-fn closure(n: usize, edges: impl Iterator<Item = (usize, usize)>) -> Vec<Vec<bool>> {
+pub(crate) fn closure(n: usize, edges: impl Iterator<Item = (usize, usize)>) -> Vec<Vec<bool>> {
     let mut r = vec![vec![false; n]; n];
     for (a, b) in edges {
         r[a][b] = true;
@@ -367,19 +375,10 @@ fn render_sp(sp: &Sp, events: &[EventKey], label: &dyn Fn(&Name) -> String) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ch;
     use crate::{format_name, run_events, OccKey};
-    use stratum_core::term::{drop_, input, lift, par, quote, zero};
+    use stratum_core::term::{drop_, input, lift, par, zero};
     use stratum_core::Name;
-
-    // Genuinely ≡N-distinct channels. Note `*⌜P⌝ ≡ P`, so a drop/quote nesting
-    // would collapse to `⌜0⌝`; nesting a (non-reducing) lift instead does not.
-    fn ch(tag: u64) -> Name {
-        let mut p = zero();
-        for _ in 0..tag {
-            p = lift(quote(zero()), p);
-        }
-        quote(p)
-    }
 
     #[test]
     fn causal_chain_is_totally_ordered() {

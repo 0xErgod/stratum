@@ -33,9 +33,30 @@ use stratum_core::{
 };
 
 mod event;
+mod structure;
 mod trace;
 pub use event::{run_events, Event, EventKey, OccKey};
+pub use structure::{event_structure, EventStructure};
 pub use trace::{traces, Trace};
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    //! Shared fixtures for the crate's unit tests.
+    use stratum_core::term::{lift, quote, zero};
+    use stratum_core::Name;
+
+    /// A family of genuinely `≡N`-distinct channels: `ch(0) = ⌜0⌝`,
+    /// `ch(1) = ⌜⌜0⌝⟨|0|⟩⌝`, `ch(2) = ⌜⌜0⌝⟨|⌜0⌝⟨|0|⟩|⟩⌝`, … Note `*⌜P⌝ ≡ P`, so
+    /// a drop/quote nesting would collapse to `⌜0⌝`; a (non-reducing, quoted) lift
+    /// nesting stays pairwise `≢N`.
+    pub(crate) fn ch(tag: u64) -> Name {
+        let mut p = zero();
+        for _ in 0..tag {
+            p = lift(quote(zero()), p);
+        }
+        quote(p)
+    }
+}
 
 /// A labelled transition to another state.
 #[derive(Clone, Debug, PartialEq, Eq)]
