@@ -25,7 +25,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use stratum_core::{Name, Proc};
 
 use crate::event::{enabled_events, initial_state, Tagged};
-use crate::{escape, Event, EventKey};
+use crate::{escape, has_var_channel, mentions_channel, Event, EventKey};
 
 /// The trace of a run: a labelled partial order over events.
 ///
@@ -216,34 +216,73 @@ impl Trace {
 /// (as [`crate::Lts::is_truncated`]).
 #[must_use]
 pub fn traces(start: &Proc, max_events: usize, max_traces: usize) -> (Vec<Trace>, bool) {
+    let (out, truncated, _) = enumerate(start, max_events, max_traces, false);
+    (out, truncated)
+}
+
+/// The trace-set of `start` under a **trace-faithful persistent-set reduction**.
+///
+/// Identical result to [`traces`], but at each state, when some event is
+/// independent of every other enabled one and *future-stable* (no other
+/// component could ever present a partner on its channel — as in the barb POR of
+/// [`crate::Lts::explore_por`], but with every `Comm` treated as relevant), only
+/// that event is fired and the rest are deferred. This prunes the redundant
+/// interleavings of independent events *before* generating them, rather than
+/// deduplicating them afterward. Genuine branches (conflicts) never satisfy the
+/// condition, so they are always fully expanded.
+///
+/// For terminating profiles the trace-set is exactly [`traces`]'s; a
+/// [`por.rs`](../../tests/por.rs)-style differential test pins this. (For a
+/// non-terminating profile both paths truncate at `max_events`; the reduction
+/// carries no cycle proviso, so faithfulness there is best-effort.)
+#[must_use]
+pub fn traces_por(start: &Proc, max_events: usize, max_traces: usize) -> (Vec<Trace>, bool) {
+    let (out, truncated, _) = enumerate(start, max_events, max_traces, true);
+    (out, truncated)
+}
+
+/// The shared enumeration core. Returns the trace-set, the truncation flag, and
+/// the number of maximal runs explored (before dedup) — the last exposes the
+/// interleaving reduction to tests.
+pub(crate) fn enumerate(
+    start: &Proc,
+    max_events: usize,
+    max_traces: usize,
+    por: bool,
+) -> (Vec<Trace>, bool, usize) {
     let mut e = Enumerator {
         seen: HashSet::new(),
         out: Vec::new(),
         truncated: false,
         max_events,
         max_traces,
+        por,
+        runs: 0,
     };
-    let state = initial_state(start);
-    e.dfs(&state, &mut Vec::new());
-    (e.out, e.truncated)
+    e.dfs(&initial_state(start), &mut Vec::new());
+    (e.out, e.truncated, e.runs)
 }
 
-/// Depth-first enumeration state for [`traces`].
+/// Depth-first enumeration state for [`traces`] / [`traces_por`].
 struct Enumerator {
     seen: HashSet<BTreeSet<EventKey>>,
     out: Vec<Trace>,
     truncated: bool,
     max_events: usize,
     max_traces: usize,
+    por: bool,
+    runs: usize,
 }
 
 impl Enumerator {
-    /// Explore every event firable from `state`, extending `run`. On reaching a
-    /// terminal state, record the maximal run's trace (deduped on its key).
+    /// Explore the events firable from `state`, extending `run`. On reaching a
+    /// terminal state, record the maximal run's trace (deduped on its key). Under
+    /// `por`, a valid singleton persistent set replaces the full fan-out.
     /// Recursion depth is bounded by `max_events`.
     fn dfs(&mut self, state: &[Tagged], run: &mut Vec<Event>) {
         let enabled = enabled_events(state);
         if enabled.is_empty() {
+            self.runs += 1;
             let t = Trace::from_run(run);
             if self.seen.insert(t.key()) {
                 if self.out.len() < self.max_traces {
@@ -258,12 +297,51 @@ impl Enumerator {
             self.truncated = true; // a run longer than the bound was cut
             return;
         }
-        for (ev, next) in enabled {
-            run.push(ev);
-            self.dfs(&next, run);
+        let chosen: Vec<usize> = match self.por.then(|| singleton_persistent(state, &enabled)) {
+            Some(Some(a)) => vec![a],          // a valid singleton persistent set
+            _ => (0..enabled.len()).collect(), // full expansion
+        };
+        for k in chosen {
+            let (ev, next) = &enabled[k];
+            run.push(ev.clone());
+            self.dfs(next, run);
             run.pop();
         }
     }
+}
+
+/// A single event that forms a persistent set at `state`, if one exists: it must
+/// be **independent** of every other enabled event (disjoint consumed occurrences
+/// and a distinct firing channel) and **future-stable** (no *other* component
+/// could ever present a communication on its channel, over-approximated by
+/// forbidding a variable in any channel position or any mention of the channel).
+/// Firing only such an event preserves every trace. Deliberately conservative:
+/// when in doubt it returns `None`, forgoing reduction, never soundness.
+fn singleton_persistent(state: &[Tagged], enabled: &[(Event, Vec<Tagged>)]) -> Option<usize> {
+    'candidate: for (a, (ea, _)) in enabled.iter().enumerate() {
+        for (b, (eb, _)) in enabled.iter().enumerate() {
+            if a == b {
+                continue;
+            }
+            let shares_occurrence = ea.key.out == eb.key.out
+                || ea.key.out == eb.key.inp
+                || ea.key.inp == eb.key.out
+                || ea.key.inp == eb.key.inp;
+            // Channels are `≡N`-canonical, so `==` is channel equality.
+            if shares_occurrence || ea.key.channel == eb.key.channel {
+                continue 'candidate;
+            }
+        }
+        let stable = state.iter().all(|(p, occ)| {
+            *occ == ea.key.out
+                || *occ == ea.key.inp
+                || (!has_var_channel(p) && !mentions_channel(p, &ea.key.channel))
+        });
+        if stable {
+            return Some(a);
+        }
+    }
+    None
 }
 
 /// The covering relation (Hasse edges) of a dependency set: the transitive
@@ -662,5 +740,89 @@ mod tests {
         assert!(!truncated);
         let lts = crate::Lts::explore(&mk(), 1000);
         assert_eq!(trace_label_runs(&ts), lts_label_runs(&lts));
+    }
+
+    // --- traces_por() faithfulness ---
+
+    /// `n` independent reaction pairs on distinct channels — the archetypal
+    /// interleaving blow-up (`n!` runs, one trace).
+    fn n_independent(n: u64) -> Proc {
+        let mut comps = Vec::new();
+        for i in 0..n {
+            let c = ch(i + 1);
+            comps.push(lift(c.clone(), zero()));
+            comps.push(input(c, |_| zero()));
+        }
+        par(comps)
+    }
+
+    /// A varied corpus exercising concurrency, causality, conflict, reflective
+    /// forks, inherited conflict, wide independence, and a terminal term.
+    fn corpus() -> Vec<Proc> {
+        vec![
+            // diamond
+            par([
+                lift(ch(1), zero()),
+                input(ch(1), |_| zero()),
+                lift(ch(2), zero()),
+                input(ch(2), |_| zero()),
+            ]),
+            // reflective chain
+            par([
+                lift(ch(1), lift(ch(2), zero())),
+                input(ch(1), drop_),
+                input(ch(2), |_| zero()),
+            ]),
+            // race
+            par([
+                lift(ch(1), zero()),
+                input(ch(1), |_| zero()),
+                input(ch(1), |_| zero()),
+            ]),
+            // reflective fork: x ; (a ∥ b)
+            par([
+                lift(ch(1), zero()),
+                input(ch(1), |_| par([lift(ch(2), zero()), lift(ch(3), zero())])),
+                input(ch(2), |_| zero()),
+                input(ch(3), |_| zero()),
+            ]),
+            // race with a downstream reaction (inherited conflict)
+            par([
+                lift(ch(1), zero()),
+                input(ch(1), |_| lift(ch(2), zero())),
+                input(ch(1), |_| zero()),
+                input(ch(2), |_| zero()),
+            ]),
+            n_independent(3),
+            n_independent(4),
+            zero(),
+        ]
+    }
+
+    #[test]
+    fn por_matches_full_on_corpus() {
+        for (i, p) in corpus().iter().enumerate() {
+            let full: BTreeSet<BTreeSet<EventKey>> =
+                traces(p, 30, 100_000).0.iter().map(Trace::key).collect();
+            let por: BTreeSet<BTreeSet<EventKey>> = traces_por(p, 30, 100_000)
+                .0
+                .iter()
+                .map(Trace::key)
+                .collect();
+            assert_eq!(full, por, "corpus[{i}]: trace-set diverged under POR");
+        }
+    }
+
+    #[test]
+    fn por_reduces_independent_interleavings() {
+        // Four independent reactions: the full path explores all 4! = 24
+        // interleavings; POR explores exactly one. Both yield the one trace.
+        let p = n_independent(4);
+        let (full, _, full_runs) = enumerate(&p, 30, 100_000, false);
+        let (por, _, por_runs) = enumerate(&p, 30, 100_000, true);
+        assert_eq!(full.len(), 1);
+        assert_eq!(por.len(), 1);
+        assert_eq!(full_runs, 24);
+        assert_eq!(por_runs, 1);
     }
 }
