@@ -94,11 +94,11 @@ pub struct Event {
 }
 
 /// An active parallel component paired with its provenance tag.
-type Tagged = (Proc, OccKey);
+pub(crate) type Tagged = (Proc, OccKey);
 
 /// The instrumented start state: the start term's active components, each tagged
 /// with its [`OccKey::Initial`] flatten-index.
-fn initial_state(start: &Proc) -> Vec<Tagged> {
+pub(crate) fn initial_state(start: &Proc) -> Vec<Tagged> {
     let mut comps = Vec::new();
     flatten(start, &mut comps);
     comps
@@ -218,10 +218,12 @@ mod tests {
 
     /// A family of structurally-distinct channels: `ch(0) = ⌜0⌝`,
     /// `ch(1) = ⌜*⌜0⌝⌝`, `ch(2) = ⌜*⌜*⌜0⌝⌝⌝`, … — pairwise `≢N`.
+    // Genuinely ≡N-distinct channels. Note `*⌜P⌝ ≡ P`, so a drop/quote nesting
+    // would collapse to `⌜0⌝`; nesting a (non-reducing) lift instead does not.
     fn ch(tag: u64) -> Name {
         let mut p = zero();
         for _ in 0..tag {
-            p = drop_(quote(p));
+            p = lift(quote(zero()), p);
         }
         quote(p)
     }

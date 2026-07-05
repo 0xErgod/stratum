@@ -35,7 +35,7 @@ use stratum_core::{
 mod event;
 mod trace;
 pub use event::{run_events, Event, EventKey, OccKey};
-pub use trace::Trace;
+pub use trace::{traces, Trace};
 
 /// A labelled transition to another state.
 #[derive(Clone, Debug, PartialEq, Eq)]
