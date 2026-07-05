@@ -793,6 +793,23 @@ mod tests {
                 input(ch(1), |_| zero()),
                 input(ch(2), |_| zero()),
             ]),
+            // reflective unfreeze: a deferred d-Comm wakes a *second* c-output,
+            // so `future_stable` must refuse to defer the c-Comm (the d-message
+            // mentions c). Exercises `mentions_channel`.
+            par([
+                lift(ch(1), zero()),
+                input(ch(1), |_| zero()),
+                lift(ch(2), lift(ch(1), zero())),
+                input(ch(2), drop_),
+            ]),
+            // channel synthesis: the received name becomes a fresh c-input
+            // (`y(w).0` with `y` a bound channel). Exercises `has_var_channel`.
+            par([
+                lift(ch(1), zero()),
+                input(ch(1), |_| zero()),
+                lift(ch(2), drop_(ch(1))),
+                input(ch(2), |y| input(y, |_| zero())),
+            ]),
             n_independent(3),
             n_independent(4),
             zero(),
