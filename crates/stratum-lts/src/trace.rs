@@ -138,8 +138,23 @@ impl Trace {
         let reach = closure(self.events.len(), self.leq.iter().copied());
         let all: Vec<usize> = (0..self.events.len()).collect();
         match decompose(&all, &reach) {
-            Some(sp) => render_sp(&sp, &self.events, &label),
+            Some(sp) => render_sp(&sp, &self.events, &label, " ; ", " ∥ "),
             None => format!("(poset, {} events)", self.events.len()),
+        }
+    }
+
+    /// The LaTeX sibling of [`Trace::to_ascii`]: a series-parallel expression
+    /// with `\cdot`/`\parallel` (math mode), else a `\text{…}` poset marker.
+    #[must_use]
+    pub fn to_latex(&self, label: impl Fn(&Name) -> String) -> String {
+        if self.events.is_empty() {
+            return r"\varnothing".to_string();
+        }
+        let reach = closure(self.events.len(), self.leq.iter().copied());
+        let all: Vec<usize> = (0..self.events.len()).collect();
+        match decompose(&all, &reach) {
+            Some(sp) => render_sp(&sp, &self.events, &label, r" \cdot ", r" \parallel "),
+            None => format!(r"\text{{(poset, {} events)}}", self.events.len()),
         }
     }
 
@@ -363,16 +378,24 @@ fn components(nodes: &[usize], related: impl Fn(usize, usize) -> bool) -> Vec<Ve
     comps
 }
 
-/// Render a series-parallel expression, parenthesizing any composite child.
-fn render_sp(sp: &Sp, events: &[EventKey], label: &dyn Fn(&Name) -> String) -> String {
+/// Render a series-parallel expression, parenthesizing any composite child, with
+/// `ser`/`par` as the series/parallel separators (so the same tree renders as
+/// ASCII `a ; (b ∥ c)` or LaTeX `a \cdot (b \parallel c)`).
+fn render_sp(
+    sp: &Sp,
+    events: &[EventKey],
+    label: &dyn Fn(&Name) -> String,
+    ser: &str,
+    par: &str,
+) -> String {
     let child = |c: &Sp| match c {
-        Sp::Leaf(_) => render_sp(c, events, label),
-        _ => format!("({})", render_sp(c, events, label)),
+        Sp::Leaf(_) => render_sp(c, events, label, ser, par),
+        _ => format!("({})", render_sp(c, events, label, ser, par)),
     };
     match sp {
         Sp::Leaf(i) => label(&events[*i].channel),
-        Sp::Series(cs) => cs.iter().map(child).collect::<Vec<_>>().join(" ; "),
-        Sp::Parallel(cs) => cs.iter().map(child).collect::<Vec<_>>().join(" ∥ "),
+        Sp::Series(cs) => cs.iter().map(child).collect::<Vec<_>>().join(ser),
+        Sp::Parallel(cs) => cs.iter().map(child).collect::<Vec<_>>().join(par),
     }
 }
 

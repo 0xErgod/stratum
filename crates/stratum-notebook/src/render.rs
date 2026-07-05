@@ -13,7 +13,7 @@
 use stratum::core::{canonicalize, Name, Proc};
 use stratum::equiv::Verdict;
 use stratum::logic::Checked;
-use stratum::lts::{format_name, Lts};
+use stratum::lts::{format_name, Lts, Trace};
 use stratum::syntax::{
     name_to_latex, to_latex, to_latex_folded, to_source, to_source_folded, Aliases,
 };
@@ -322,5 +322,181 @@ pub fn render_run(
     MimeBundle {
         text_plain: plain,
         text_latex,
+    }
+}
+
+/// Fold an event's channel and message to `chan⟨message⟩`, channels via their
+/// source alias where available.
+fn event_label_ascii(chan: &Name, message: &Name, aliases: &Aliases) -> String {
+    format!(
+        "{}⟨{}⟩",
+        fold_name_ascii(chan, aliases),
+        fold_name_ascii(message, aliases)
+    )
+}
+
+/// Render a **trace-set** as an indexed list — one row per trace, addressable as
+/// `tr[i]`, showing its event count and series-parallel form. `truncated` marks
+/// a bound-limited enumeration.
+#[must_use]
+pub fn render_traces(ts: &[Trace], truncated: bool, aliases: &Aliases, repr: Repr) -> MimeBundle {
+    let status = if truncated {
+        "(truncated — bound hit; more traces exist)"
+    } else {
+        "(complete)"
+    };
+    let mut plain = format!("Traces: {} traces  {status}\n", ts.len());
+    for (i, t) in ts.iter().enumerate() {
+        plain.push_str(&format!(
+            "  tr[{i}]   {} events   {}\n",
+            t.len(),
+            t.to_ascii(|n| fold_name_ascii(n, aliases)),
+        ));
+    }
+
+    let text_latex = match repr {
+        Repr::Ascii => None,
+        Repr::Latex => {
+            let rows: Vec<String> = ts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    format!(
+                        r"\mathsf{{tr}}_{{{i}}} & {} & {}",
+                        t.len(),
+                        t.to_latex(|n| name_to_latex(n, Some(aliases))),
+                    )
+                })
+                .collect();
+            let body = if rows.is_empty() {
+                format!(r"\text{{Traces: 0 traces {}}}", escape_latex_text(status))
+            } else {
+                format!(r"\begin{{array}}{{rll}}{}\end{{array}}", rows.join(r" \\ "))
+            };
+            Some(display_math(&body))
+        }
+    };
+    MimeBundle {
+        text_plain: plain,
+        text_latex,
+    }
+}
+
+/// Render a single [`Trace`] as a listing: its series-parallel form, then one
+/// line per event and one per covering (Hasse) edge.
+#[must_use]
+pub fn render_trace(t: &Trace, aliases: &Aliases, repr: Repr) -> MimeBundle {
+    if t.is_empty() {
+        return MimeBundle {
+            text_plain: "Trace: 0 events (empty)".to_string(),
+            text_latex: match repr {
+                Repr::Ascii => None,
+                Repr::Latex => Some(display_math(r"\varnothing")),
+            },
+        };
+    }
+
+    let sp = t.to_ascii(|n| fold_name_ascii(n, aliases));
+    let mut plain = format!("Trace: {} events   {sp}\n", t.len());
+    for (i, e) in t.events().iter().enumerate() {
+        plain.push_str(&format!(
+            "  e{i}  {}\n",
+            event_label_ascii(&e.channel, &e.message, aliases)
+        ));
+    }
+    for &(a, b) in t.covering() {
+        plain.push_str(&format!("  e{a} ⋖ e{b}\n"));
+    }
+
+    let text_latex = match repr {
+        Repr::Ascii => None,
+        Repr::Latex => {
+            let sp_l = t.to_latex(|n| name_to_latex(n, Some(aliases)));
+            let rows: Vec<String> = t
+                .events()
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    format!(
+                        r"e_{{{i}}} & {}\langle {}\rangle",
+                        name_to_latex(&e.channel, Some(aliases)),
+                        name_to_latex(&e.message, Some(aliases)),
+                    )
+                })
+                .collect();
+            let events = format!(r"\begin{{array}}{{rl}}{}\end{{array}}", rows.join(r" \\ "));
+            let edges: Vec<String> = t
+                .covering()
+                .iter()
+                .map(|&(a, b)| format!(r"e_{{{a}}} \lessdot e_{{{b}}}"))
+                .collect();
+            let mut lines = vec![sp_l, events];
+            if !edges.is_empty() {
+                lines.push(edges.join(r" \quad "));
+            }
+            Some(display_math(&format!(
+                r"\begin{{array}}{{l}}{}\end{{array}}",
+                lines.join(r" \\ ")
+            )))
+        }
+    };
+    MimeBundle {
+        text_plain: plain,
+        text_latex,
+    }
+}
+
+#[cfg(test)]
+mod trace_render_tests {
+    use super::*;
+    use stratum::lts::traces;
+    use stratum::syntax::parse_with_aliases;
+
+    fn build(src: &str) -> (Vec<Trace>, Aliases) {
+        let (p, aliases) = parse_with_aliases(src).expect("parse");
+        let (ts, _) = traces(&p, 20, 100);
+        (ts, aliases)
+    }
+
+    #[test]
+    fn traces_list_race_shows_two_rows() {
+        // One output, two receivers -> two traces.
+        let (ts, aliases) = build("new a\na!(0) | a(x).0 | a(w).0");
+        assert_eq!(ts.len(), 2);
+        let b = render_traces(&ts, false, &aliases, Repr::Ascii);
+        assert!(b.text_plain.contains("Traces: 2 traces  (complete)"));
+        assert!(b.text_plain.contains("tr[0]"));
+        assert!(b.text_plain.contains("tr[1]"));
+        assert!(b.text_latex.is_none());
+    }
+
+    #[test]
+    fn traces_list_truncated_flag() {
+        let (ts, aliases) = build("new a\na!(0) | a(x).0 | a(w).0");
+        let b = render_traces(&ts, true, &aliases, Repr::Latex);
+        assert!(b.text_plain.contains("truncated"));
+        let latex = b.text_latex.expect("latex mode emits text/latex");
+        assert!(latex.contains(r"\mathsf{tr}_{0}"));
+    }
+
+    #[test]
+    fn trace_detail_diamond_is_parallel() {
+        // Two independent reactions -> one trace, `a ∥ b`.
+        let (ts, aliases) = build("new a, b\na!(0) | a(x).0 | b!(0) | b(y).0");
+        assert_eq!(ts.len(), 1);
+        let ascii = render_trace(&ts[0], &aliases, Repr::Ascii);
+        assert!(ascii.text_plain.contains("Trace: 2 events"));
+        assert!(ascii.text_plain.contains(" ∥ "), "{}", ascii.text_plain);
+        let latex = render_trace(&ts[0], &aliases, Repr::Latex);
+        assert!(latex.text_latex.expect("latex").contains(r"\parallel"));
+    }
+
+    #[test]
+    fn trace_detail_empty_is_marked() {
+        let (ts, aliases) = build("0");
+        assert_eq!(ts.len(), 1);
+        let b = render_trace(&ts[0], &aliases, Repr::Latex);
+        assert_eq!(b.text_plain, "Trace: 0 events (empty)");
+        assert_eq!(b.text_latex.as_deref(), Some("$$\n\\varnothing\n$$"));
     }
 }
