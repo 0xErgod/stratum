@@ -325,13 +325,16 @@ pub fn render_run(
     }
 }
 
-/// Fold an event's channel and message to `chan⟨message⟩`, channels via their
-/// source alias where available.
+/// Render an event as `chan⟨message⟩`. The **channel** folds to its declared
+/// source alias where available; the **message** is shown explicitly in its
+/// reified `⌜…⌝` form (never alias-folded), so a transmitted name is never
+/// disguised as a channel — e.g. `a⟨@0⟩`, the reification of a lifted `0`, not
+/// `a⟨a⟩` just because `a` was minted as `⌜0⌝`.
 fn event_label_ascii(chan: &Name, message: &Name, aliases: &Aliases) -> String {
     format!(
         "{}⟨{}⟩",
         fold_name_ascii(chan, aliases),
-        fold_name_ascii(message, aliases)
+        format_name(message)
     )
 }
 
@@ -420,7 +423,7 @@ pub fn render_trace(t: &Trace, aliases: &Aliases, repr: Repr) -> MimeBundle {
                     format!(
                         r"e_{{{i}}} & {}\langle {}\rangle",
                         name_to_latex(&e.channel, Some(aliases)),
-                        name_to_latex(&e.message, Some(aliases)),
+                        name_to_latex(&e.message, None),
                     )
                 })
                 .collect();
@@ -487,6 +490,10 @@ mod trace_render_tests {
         let ascii = render_trace(&ts[0], &aliases, Repr::Ascii);
         assert!(ascii.text_plain.contains("Trace: 2 events"));
         assert!(ascii.text_plain.contains(" ∥ "), "{}", ascii.text_plain);
+        // The payload of `a!(0)` is shown as the reified `@0`, not disguised as
+        // the channel alias `a` (which was minted as `⌜0⌝`).
+        assert!(ascii.text_plain.contains("a⟨@0⟩"), "{}", ascii.text_plain);
+        assert!(!ascii.text_plain.contains("a⟨a⟩"), "{}", ascii.text_plain);
         let latex = render_trace(&ts[0], &aliases, Repr::Latex);
         assert!(latex.text_latex.expect("latex").contains(r"\parallel"));
     }
