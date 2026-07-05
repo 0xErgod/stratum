@@ -33,9 +33,10 @@ fn assert_same(a: &str, b: &str) {
 
 #[test]
 fn new_mints_ground_names_in_order() {
-    // req = ground(0) = @0, ack = ground(1) = @(@0!(0)).
-    let req = quote(zero());
-    let ack = quote(lift(quote(zero()), zero()));
+    // `@0 = ground(0)` is reserved, so minting starts at ground(1):
+    // req = ground(1) = @(@0!(0)), ack = ground(2) = @(@0!(@0!(0))).
+    let req = quote(lift(quote(zero()), zero()));
+    let ack = quote(lift(quote(zero()), lift(quote(zero()), zero())));
     let expected = par([
         lift(req.clone(), zero()),
         Proc::Input {
@@ -51,7 +52,7 @@ fn new_mints_ground_names_in_order() {
 fn new_equals_hand_written_raw() {
     assert_same(
         "new req, ack\nreq!(0) | req(x).ack!(0)",
-        "@0!(0) | @0(x).@(@0!(0))!(0)",
+        "@(@0!(0))!(0) | @(@0!(0))(x).@(@0!(@0!(0)))!(0)",
     );
 }
 
@@ -270,7 +271,7 @@ fn expand_sample_is_verbatim() {
     // The desugaring the reviewer eyeballs.
     assert_eq!(
         expand("new req, ack\nreq!(0) | req(x).ack!(0)").unwrap(),
-        "@0!(0) | @0(v0).@(@0!(0))!(0)",
+        "@(@0!(0))!(0) | @(@0!(0))(v0).@(@0!(@0!(0)))!(0)",
     );
 }
 

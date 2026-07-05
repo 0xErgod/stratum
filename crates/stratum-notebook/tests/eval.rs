@@ -238,10 +238,20 @@ a!(0) | a(x).0",
 #[test]
 fn typecheck_ok_and_error() {
     let mut ns = Namespace::new();
-    eval(HANDSHAKE, &mut ns);
 
-    // Well-typed: both channels carry Nil.
-    let out = eval("#typecheck _1 with req:Nil, ack:Nil", &mut ns);
+    // `@0` is reserved, so `new req, ack` mints req = ground(1) = @(@0!(0)) and
+    // ack = ground(2) = @(@0!(@0!(0))). Reflection fixes each channel's carried
+    // type from its own code: req's code @0!(0) has spatial type Chan(Nil) so
+    // req carries Nil; ack's code @0!(@0!(0)) has spatial type Chan(Chan(Nil))
+    // so ack carries Chan(Nil). A well-typed program must therefore send a
+    // Chan(Nil) payload on ack — here `ack!(req!(0))`, since req!(0) : Chan(Nil).
+    // (The bare `ack!(0)` of the shared HANDSHAKE now sends Nil on a
+    // Chan(Nil)-carrying channel; under reflection that is intrinsically
+    // ill-typed for ground(2), so this cell uses its own body.)
+    eval("new req, ack\n\nreq!(0) | req(x).ack!(req!(0))", &mut ns);
+
+    // Well-typed with Γ agreeing with the reflected sorts.
+    let out = eval("#typecheck _1 with req:Nil, ack:Chan(Nil)", &mut ns);
     let b = ok_display(&out);
     assert!(
         b.text_plain.contains("well-typed"),

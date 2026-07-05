@@ -15,10 +15,15 @@
 //! ```
 //!
 //! These are pairwise `≢N` and never quote/drop-reducible (they contain no
-//! drops). A single global counter, advanced in declaration order across every
-//! `new` — top-level and macro-local — assigns each minted name its `ground(k)`.
-//! Because a macro's local `new` is resolved afresh on *every* expansion, two
-//! expansions of the same macro get distinct channels (hygiene).
+//! drops). `ground(0) = @0 = ⌜0⌝` is **reserved**: the reification of the null
+//! process is a special name and is never handed out (giving it out would make a
+//! fresh channel `a` satisfy `a = ⌜0⌝`, so `a!(0)` would send `a`'s own name and
+//! `*a = 0` — a degenerate self-reference). Minting therefore starts at
+//! `ground(1)`. A single global counter, advanced in declaration order across
+//! every `new` — top-level and macro-local — assigns each minted name its
+//! `ground(k)` (`k ≥ 1`). Because a macro's local `new` is resolved afresh on
+//! *every* expansion, two expansions of the same macro get distinct channels
+//! (hygiene).
 //!
 //! ## Identifier resolution
 //!
@@ -138,7 +143,8 @@ impl<'a> Resolver<'a> {
     pub(crate) fn new(defs: &'a HashMap<String, Def>) -> Self {
         Resolver {
             defs,
-            counter: 0,
+            // `ground(0) = @0 = ⌜0⌝` is reserved; mint fresh names from `ground(1)`.
+            counter: 1,
             global: Env::default(),
             aliases: HashMap::new(),
         }

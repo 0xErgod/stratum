@@ -55,8 +55,9 @@ pub fn to_source(p: &Proc) -> String {
 ///
 /// let (p, aliases) = parse_with_aliases("new req, ack\nreq!(0) | req(x).ack!(0)").unwrap();
 /// assert_eq!(to_source_folded(&p, &aliases), "req!(0) | req(v0).ack!(0)");
-/// // The raw view spells the ground names out in full.
-/// assert_eq!(to_source(&p), "@0!(0) | @0(v0).@(@0!(0))!(0)");
+/// // The raw view spells the ground names out in full. `@0` is reserved, so
+/// // req = ground(1) = @(@0!(0)) and ack = ground(2) = @(@0!(@0!(0))).
+/// assert_eq!(to_source(&p), "@(@0!(0))!(0) | @(@0!(0))(v0).@(@0!(@0!(0)))!(0)");
 /// ```
 pub fn to_source_folded(p: &Proc, aliases: &Aliases) -> String {
     let mut env: Vec<(u64, String)> = Vec::new();

@@ -53,9 +53,10 @@
 //! All of this is **pure surface sugar**: it is expanded at parse time, so
 //! [`parse`] still returns an ordinary closed [`Proc`] with no trace of the
 //! declarations. `new` is *name generation*, not the ν/restriction of the
-//! π-calculus: `new n1, …` mints canonical distinct ground names `@0`,
-//! `@(@0!(0))`, … (nested lifts over `0`, quoted), assigned by a global counter
-//! in declaration order. A macro's local `new` is minted afresh on every
+//! π-calculus: `@0 = ⌜0⌝` is reserved (the reified null process is never handed
+//! out), so `new n1, …` mints canonical distinct ground names starting at
+//! `@(@0!(0))`, `@(@0!(@0!(0)))`, … (nested lifts over `0`, quoted), assigned by
+//! a global counter in declaration order. A macro's local `new` is minted afresh on every
 //! expansion, so repeated expansions get distinct channels (hygiene). Macro
 //! arguments are substituted capture-avoidingly, cyclic definitions are
 //! rejected, and everything is transparent: [`expand`] shows the fully
@@ -65,15 +66,19 @@
 //! use stratum_syntax::{expand, parse};
 //! use stratum_core::structurally_congruent;
 //!
-//! // `new` mints ground names; the program desugars to a pure term.
+//! // `new` mints ground names; `@0` is reserved so minting starts at
+//! // ground(1) = @(@0!(0)) (req), ground(2) = @(@0!(@0!(0))) (ack).
 //! let sugared = "new req, ack\nreq!(0) | req(x).ack!(0)";
-//! let raw = "@0!(0) | @0(x).@(@0!(0))!(0)";
+//! let raw = "@(@0!(0))!(0) | @(@0!(0))(x).@(@0!(@0!(0)))!(0)";
 //! assert!(structurally_congruent(
 //!     &parse(sugared).unwrap(),
 //!     &parse(raw).unwrap(),
 //! ));
 //! // `expand` reveals the desugaring.
-//! assert_eq!(expand(sugared).unwrap(), "@0!(0) | @0(v0).@(@0!(0))!(0)");
+//! assert_eq!(
+//!     expand(sugared).unwrap(),
+//!     "@(@0!(0))!(0) | @(@0!(0))(v0).@(@0!(@0!(0)))!(0)"
+//! );
 //! ```
 //!
 //! ## Two parsers
@@ -200,10 +205,13 @@ impl Aliases {
     ///
     /// ```
     /// use stratum_syntax::parse_with_aliases;
-    /// use stratum_core::term::{quote, zero};
+    /// use stratum_core::term::{lift, quote, zero};
     ///
     /// let (_p, aliases) = parse_with_aliases("new req\nreq!(0)").unwrap();
-    /// assert_eq!(aliases.get(&quote(zero())), Some("req")); // @0 folds to `req`
+    /// // `@0` is reserved, so the first `new` mints ground(1) = @(@0!(0)).
+    /// assert_eq!(aliases.get(&quote(zero())), None); // reserved @0 is unaliased
+    /// let req = quote(lift(quote(zero()), zero())); // @(@0!(0))
+    /// assert_eq!(aliases.get(&req), Some("req")); // ground(1) folds to `req`
     /// ```
     pub fn get(&self, name: &Name) -> Option<&str> {
         self.map

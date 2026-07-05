@@ -325,16 +325,16 @@ pub fn render_run(
     }
 }
 
-/// Render an event as `chan⟨message⟩`. The **channel** folds to its declared
-/// source alias where available; the **message** is shown explicitly in its
-/// reified `⌜…⌝` form (never alias-folded), so a transmitted name is never
-/// disguised as a channel — e.g. `a⟨@0⟩`, the reification of a lifted `0`, not
-/// `a⟨a⟩` just because `a` was minted as `⌜0⌝`.
+/// Render an event as `chan⟨message⟩`, both folded to their source alias where
+/// available. A transmitted name is never disguised as a channel because `@0`
+/// (`⌜0⌝`) is reserved and never minted as a `new` name (see the resolver): so a
+/// lifted `0` reifies to the unaliased `@0` and shows as `a⟨@0⟩`, while a passed
+/// *name* keeps its readable alias, `a⟨b⟩`.
 fn event_label_ascii(chan: &Name, message: &Name, aliases: &Aliases) -> String {
     format!(
         "{}⟨{}⟩",
         fold_name_ascii(chan, aliases),
-        format_name(message)
+        fold_name_ascii(message, aliases)
     )
 }
 
@@ -423,7 +423,7 @@ pub fn render_trace(t: &Trace, aliases: &Aliases, repr: Repr) -> MimeBundle {
                     format!(
                         r"e_{{{i}}} & {}\langle {}\rangle",
                         name_to_latex(&e.channel, Some(aliases)),
-                        name_to_latex(&e.message, None),
+                        name_to_latex(&e.message, Some(aliases)),
                     )
                 })
                 .collect();
