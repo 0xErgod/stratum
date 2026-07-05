@@ -37,7 +37,7 @@ mod structure;
 mod trace;
 pub use event::{run_events, Event, EventKey, OccKey};
 pub use structure::{event_structure, EventStructure};
-pub use trace::{traces, Trace};
+pub use trace::{traces, traces_por, Trace};
 
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -522,7 +522,7 @@ fn observed_barbs(comps: &[Proc], observed: &[Name]) -> BTreeSet<Name> {
 /// frozen under a quote (`⌜…y(z)…⌝`) is impervious to substitution (§2.6) and can
 /// never fire, but is still flagged — safe, forgoing some reduction, not needed
 /// for correctness.
-fn has_var_channel(p: &Proc) -> bool {
+pub(crate) fn has_var_channel(p: &Proc) -> bool {
     match p {
         Proc::Zero => false,
         Proc::Drop(n) => name_has_var_channel(n),
@@ -545,7 +545,7 @@ fn name_has_var_channel(n: &Name) -> bool {
 
 /// Whether any `Lift`/`Input` node anywhere in `p` (including inside lifted
 /// arguments, input bodies, drops, and *quoted* processes) uses a channel `≡N c`.
-fn mentions_channel(p: &Proc, c: &Name) -> bool {
+pub(crate) fn mentions_channel(p: &Proc, c: &Name) -> bool {
     match p {
         Proc::Zero => false,
         Proc::Drop(n) => name_mentions_channel(n, c),
