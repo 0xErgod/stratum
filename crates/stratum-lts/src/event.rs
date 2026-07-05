@@ -214,19 +214,8 @@ pub fn run_events(start: &Proc, max_events: usize) -> (Vec<Event>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stratum_core::term::{drop_, input, lift, par, quote, zero};
-
-    /// A family of genuinely `≡N`-distinct channels: `ch(0) = ⌜0⌝`,
-    /// `ch(1) = ⌜⌜0⌝⟨|0|⟩⌝`, `ch(2) = ⌜⌜0⌝⟨|⌜0⌝⟨|0|⟩|⟩⌝`, … Note `*⌜P⌝ ≡ P`, so
-    /// a drop/quote nesting would collapse to `⌜0⌝`; a (non-reducing, quoted)
-    /// lift nesting stays pairwise `≢N`.
-    fn ch(tag: u64) -> Name {
-        let mut p = zero();
-        for _ in 0..tag {
-            p = lift(quote(zero()), p);
-        }
-        quote(p)
-    }
+    use crate::test_support::ch;
+    use stratum_core::term::{drop_, input, lift, par, zero};
 
     #[test]
     fn causal_reflective_dependency() {
