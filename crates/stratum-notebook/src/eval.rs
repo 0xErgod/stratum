@@ -458,6 +458,12 @@ fn dir_project(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellEr
     })?;
     let t = resolve_trace(spec.trim(), ns)?;
     let names = resolve_names(&split_list(chans), ns)?;
+    if names.is_empty() {
+        return Err(CellError::new(
+            "DirectiveError",
+            "usage: #project <tracesname>[i] <channel[,channel]> — name at least one channel",
+        ));
+    }
     let projected = t.project(|e| names.iter().any(|n| name_equiv(&e.channel, n)));
     Ok(vec![render_trace(&projected, ns.aliases(), ns.repr())])
 }
