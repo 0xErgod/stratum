@@ -48,8 +48,8 @@ use stratum::syntax::Aliases;
 pub use eval::evaluate;
 pub use formula::{parse_formula, CompiledFormula, FormulaError};
 pub use render::{
-    escape_html, render_checked, render_core, render_lts, render_proc, render_run,
-    render_typecheck, render_verdict, MimeBundle,
+    escape_html, render_checked, render_core, render_lts, render_proc, render_run, render_trace,
+    render_traces, render_typecheck, render_verdict, MimeBundle,
 };
 pub use service::{complete, inspect, is_complete, Completions, Inspection, IsComplete};
 
