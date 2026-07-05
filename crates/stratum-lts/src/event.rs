@@ -216,10 +216,10 @@ mod tests {
     use super::*;
     use stratum_core::term::{drop_, input, lift, par, quote, zero};
 
-    /// A family of structurally-distinct channels: `ch(0) = ⌜0⌝`,
-    /// `ch(1) = ⌜*⌜0⌝⌝`, `ch(2) = ⌜*⌜*⌜0⌝⌝⌝`, … — pairwise `≢N`.
-    // Genuinely ≡N-distinct channels. Note `*⌜P⌝ ≡ P`, so a drop/quote nesting
-    // would collapse to `⌜0⌝`; nesting a (non-reducing) lift instead does not.
+    /// A family of genuinely `≡N`-distinct channels: `ch(0) = ⌜0⌝`,
+    /// `ch(1) = ⌜⌜0⌝⟨|0|⟩⌝`, `ch(2) = ⌜⌜0⌝⟨|⌜0⌝⟨|0|⟩|⟩⌝`, … Note `*⌜P⌝ ≡ P`, so
+    /// a drop/quote nesting would collapse to `⌜0⌝`; a (non-reducing, quoted)
+    /// lift nesting stays pairwise `≢N`.
     fn ch(tag: u64) -> Name {
         let mut p = zero();
         for _ in 0..tag {

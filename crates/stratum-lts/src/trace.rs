@@ -207,6 +207,7 @@ struct Enumerator {
 impl Enumerator {
     /// Explore every event firable from `state`, extending `run`. On reaching a
     /// terminal state, record the maximal run's trace (deduped on its key).
+    /// Recursion depth is bounded by `max_events`.
     fn dfs(&mut self, state: &[Tagged], run: &mut Vec<Event>) {
         let enabled = enabled_events(state);
         if enabled.is_empty() {
@@ -509,6 +510,8 @@ mod tests {
     }
 
     /// The set of maximal label-runs of the full LTS (DFS to terminal states).
+    /// Assumes an **acyclic** LTS (the round-trip inputs are replication-free); a
+    /// replicating term would need a visited guard to avoid looping.
     fn lts_label_runs(lts: &crate::Lts) -> BTreeSet<LabelRun> {
         fn go(lts: &crate::Lts, s: usize, path: &mut LabelRun, out: &mut BTreeSet<LabelRun>) {
             let ts = lts.transitions(s);
