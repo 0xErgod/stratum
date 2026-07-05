@@ -112,6 +112,10 @@ impl Collector {
             // already interned; record the dependency edge.
             for occ in [&ev.key.out, &ev.key.inp] {
                 if let Some(pk) = occ.producer() {
+                    debug_assert!(
+                        self.idx.contains_key(pk),
+                        "a consumed occurrence's producer must be interned before its consumer"
+                    );
                     if let Some(&p) = self.idx.get(pk) {
                         self.direct.insert((p, i));
                     }
@@ -156,6 +160,9 @@ impl EventStructure {
     pub fn in_conflict(&self, a: usize, b: usize) -> bool {
         let reach = closure(self.events.len(), self.leq.iter().copied());
         let below = |x: usize, y: usize| x == y || reach[x][y];
+        // Self-conflict cannot arise: an event's causal history is a single
+        // conflict-free chain, so no event lies above both endpoints of an
+        // immediate conflict; hence `in_conflict(i, i)` is always false.
         self.conflict
             .iter()
             .any(|&(p, q)| (below(p, a) && below(q, b)) || (below(p, b) && below(q, a)))

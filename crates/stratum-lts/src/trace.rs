@@ -61,6 +61,10 @@ impl Trace {
         for (i, e) in events.iter().enumerate() {
             for occ in [&e.key.out, &e.key.inp] {
                 if let Some(pk) = occ.producer() {
+                    debug_assert!(
+                        idx.contains_key(pk),
+                        "a consumed occurrence's producer must be an earlier event of the run"
+                    );
                     if let Some(&p) = idx.get(pk) {
                         direct.insert((p, i));
                     }
