@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use stratum::core::{canonicalize_name, Name, Proc};
 use stratum::equiv::Verdict;
 use stratum::logic::Checked;
-use stratum::lts::Lts;
+use stratum::lts::{Lts, Trace};
 use stratum::syntax::Aliases;
 
 pub use eval::evaluate;
@@ -116,6 +116,14 @@ pub enum Obj {
         /// The reduction applied during exploration.
         reduction: Reduction,
     },
+    /// The set of traces produced by `#traces`, with a truncation flag; its
+    /// elements are addressed as `tr[i]`.
+    Traces {
+        /// The enumerated traces.
+        traces: Vec<Trace>,
+        /// Whether the enumeration hit a bound.
+        truncated: bool,
+    },
     /// An equivalence verdict produced by `#bisim`.
     Verdict(Verdict),
     /// A model-checking result produced by `#check`.
@@ -135,6 +143,7 @@ impl Obj {
         match self {
             Obj::Proc(_) => "proc",
             Obj::Lts { .. } => "lts",
+            Obj::Traces { .. } => "traces",
             Obj::Verdict(_) => "verdict",
             Obj::Checked(_) => "checked",
             Obj::Bool(_) => "bool",

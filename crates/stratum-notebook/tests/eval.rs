@@ -533,3 +533,78 @@ fn repr_reports_current_mode() {
     let out = eval("#repr", &mut ns);
     assert!(ok_display(&out).text_plain.contains("LaTeX"));
 }
+
+// ---------------------------------------------------------------------------
+// #traces / tr[i] / #trace / #lin / #project
+// ---------------------------------------------------------------------------
+
+/// A diamond (two independent reactions) is one trace; a race is two.
+#[test]
+fn traces_binds_and_lists() {
+    let mut ns = Namespace::new();
+    let out = eval(
+        "#traces new a, b\na!(0) | a(x).0 | b!(0) | b(y).0 -> tr",
+        &mut ns,
+    );
+    let b = ok_display(&out);
+    assert!(
+        b.text_plain.contains("Traces: 1 traces"),
+        "{}",
+        b.text_plain
+    );
+    assert!(b.text_plain.contains("tr[0]"), "{}", b.text_plain);
+    // The binding is a trace-set.
+    assert!(matches!(ns.get("tr"), Some(Obj::Traces { .. })));
+}
+
+#[test]
+fn trace_handle_selects_and_renders() {
+    let mut ns = Namespace::new();
+    eval(
+        "#traces new a, b\na!(0) | a(x).0 | b!(0) | b(y).0 -> tr",
+        &mut ns,
+    );
+    // `#trace tr[0]` shows the partial order; the diamond is a parallel form.
+    let out = eval("#trace tr[0]", &mut ns);
+    let b = ok_display(&out);
+    assert!(b.text_plain.contains("Trace: 2 events"), "{}", b.text_plain);
+    assert!(b.text_plain.contains(" ∥ "), "{}", b.text_plain);
+}
+
+#[test]
+fn lin_lists_linearizations() {
+    let mut ns = Namespace::new();
+    eval(
+        "#traces new a, b\na!(0) | a(x).0 | b!(0) | b(y).0 -> tr",
+        &mut ns,
+    );
+    // Two concurrent events -> two linearizations.
+    let out = eval("#lin tr[0]", &mut ns);
+    let b = ok_display(&out);
+    assert!(b.text_plain.contains("2 linearization"), "{}", b.text_plain);
+}
+
+#[test]
+fn project_restricts_to_an_agent() {
+    let mut ns = Namespace::new();
+    eval(
+        "#traces new a, b\na!(0) | a(x).0 | b!(0) | b(y).0 -> tr",
+        &mut ns,
+    );
+    // Projecting onto `a` keeps a single event.
+    let out = eval("#project tr[0] a", &mut ns);
+    let b = ok_display(&out);
+    assert!(b.text_plain.contains("Trace: 1 events"), "{}", b.text_plain);
+}
+
+#[test]
+fn trace_handle_errors_are_clean() {
+    let mut ns = Namespace::new();
+    eval("#traces new a\na!(0) | a(x).0 -> tr", &mut ns);
+    // Out-of-range index.
+    let out = eval("#trace tr[9]", &mut ns);
+    assert!(out.error.is_some(), "expected an index error");
+    // Unknown trace-set.
+    let out = eval("#lin nope[0]", &mut ns);
+    assert!(out.error.is_some(), "expected a name error");
+}

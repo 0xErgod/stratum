@@ -425,6 +425,8 @@ fn fn_get(ns: &SharedNs, name: &str) -> VmResult<Value> {
         Obj::Bool(b) => rune::to_value(*b),
         Obj::Int(i) => rune::to_value(*i),
         Obj::Text(t) => rune::to_value(t.clone()),
+        // A trace-set has no first-class Rune type yet; expose its size.
+        Obj::Traces { traces, .. } => rune::to_value(traces.len() as i64),
     };
     match converted {
         Ok(v) => VmResult::Ok(v),

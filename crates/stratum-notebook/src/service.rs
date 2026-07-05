@@ -532,6 +532,13 @@ fn inspect_obj(name: &str, obj: &Obj, ns: &Namespace) -> Inspection {
         Obj::Bool(b) => format!("bool `{name}`\n  {b}"),
         Obj::Int(i) => format!("int `{name}`\n  {i}"),
         Obj::Text(t) => format!("text `{name}`\n  {t}"),
+        Obj::Traces { traces, truncated } => {
+            let bound = if *truncated { " (truncated)" } else { "" };
+            format!(
+                "traces `{name}`\n  {} trace(s){bound}; address one as `{name}[i]`",
+                traces.len(),
+            )
+        }
     };
     Inspection {
         text_html: Some(format!(
