@@ -175,6 +175,30 @@ impl Trace {
         s.push_str("}\n");
         s
     }
+
+    /// The projection onto the events an agent can see: keep the events
+    /// satisfying `keep`, ordered by the **induced** causal order (`a ≤ b` in the
+    /// projection iff `a ≤ b` here). Two traces with the same projection are ones
+    /// the agent cannot tell apart — the raw material of knowledge.
+    #[must_use]
+    pub fn project(&self, keep: impl Fn(&EventKey) -> bool) -> Trace {
+        let reach = closure(self.events.len(), self.leq.iter().copied());
+        let kept: Vec<usize> = (0..self.events.len())
+            .filter(|&i| keep(&self.events[i]))
+            .collect();
+        let events: Vec<EventKey> = kept.iter().map(|&i| self.events[i].clone()).collect();
+        // The full induced order over the kept events, then reduce to covering.
+        let mut direct = BTreeSet::new();
+        for (na, &oa) in kept.iter().enumerate() {
+            for (nb, &ob) in kept.iter().enumerate() {
+                if na != nb && reach[oa][ob] {
+                    direct.insert((na, nb));
+                }
+            }
+        }
+        let leq = covering_relation(events.len(), &direct);
+        Trace { events, leq }
+    }
 }
 
 /// The set of traces of `start` — its behaviour as a quotient of its runs.
@@ -515,6 +539,25 @@ mod tests {
             leq: vec![(0, 2), (1, 2), (1, 3)],
         };
         assert_eq!(t.to_ascii(format_name), "(poset, 4 events)");
+    }
+
+    #[test]
+    fn projection_keeps_induced_order() {
+        // x ; a (a causal chain). Projecting onto {a} drops x and its edge;
+        // projecting onto both keeps the single covering edge.
+        let chain = par([
+            lift(ch(1), lift(ch(2), zero())),
+            input(ch(1), drop_),
+            input(ch(2), |_| zero()),
+        ]);
+        let (evs, _) = run_events(&chain, 10);
+        let t = Trace::from_run(&evs);
+        let onto_a = t.project(|e| stratum_core::name_equiv(&e.channel, &ch(2)));
+        assert_eq!(onto_a.len(), 1);
+        assert_eq!(onto_a.covering().len(), 0);
+        let both = t.project(|_| true);
+        assert_eq!(both.len(), 2);
+        assert_eq!(both.covering().len(), 1);
     }
 
     // --- traces() enumeration ---

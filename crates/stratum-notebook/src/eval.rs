@@ -7,17 +7,17 @@
 //! toolkit logic (parse, explore, check, bisim, typecheck) is invoked here and
 //! immediately rendered; nothing panics on bad input.
 
-use stratum::core::{canonicalize, step_labeled, Name, Proc};
+use stratum::core::{canonicalize, name_equiv, step_labeled, Name, Proc};
 use stratum::equiv::{strong_barbed_bisimilar, weak_barbed_bisimilar};
 use stratum::logic::{counterexample, holds_checked, witness};
-use stratum::lts::{format_name, Lts};
+use stratum::lts::{format_name, traces, EventKey, Lts, Trace};
 use stratum::syntax::{name_to_latex, parse_with_aliases, to_latex, to_source, ParseError};
 use stratum::types::{check as typecheck, Env, Ty};
 
 use crate::formula::parse_formula;
 use crate::render::{
-    display_math, render_checked, render_core, render_lts, render_proc, render_run,
-    render_typecheck, render_verdict, MimeBundle,
+    display_math, render_checked, render_core, render_lts, render_proc, render_run, render_trace,
+    render_traces, render_typecheck, render_verdict, MimeBundle,
 };
 use crate::{default_observations, CellError, CellOutcome, Namespace, Obj, Reduction, Repr};
 
@@ -126,7 +126,10 @@ fn run_meta(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError
         "counterexample" => dir_counterexample(after.trim(), ns),
         "bisim" => dir_bisim(after.trim(), ns),
         "step" => dir_step(after.trim(), ns),
+        "traces" => dir_traces(after.trim(), ns),
         "trace" => dir_trace(after.trim(), ns),
+        "lin" => dir_lin(after.trim(), ns),
+        "project" => dir_project(after.trim(), ns),
         "typecheck" => dir_typecheck(after.trim(), ns),
         "ascii" => dir_repr(Some(Repr::Ascii), ns),
         "latex" => dir_repr(Some(Repr::Latex), ns),
@@ -366,13 +369,19 @@ fn dir_step(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError
     }])
 }
 
-/// `#trace <ltsname>` — a sample run from the initial state.
+/// `#trace <ltsname>` samples a run from an LTS; `#trace <tracesname>[i]` shows
+/// one enumerated trace's partial order.
 fn dir_trace(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
-    let name = rest.trim();
-    if name.is_empty() {
-        return arity_err("trace", "#trace <ltsname>");
+    let arg = rest.trim();
+    if arg.is_empty() {
+        return arity_err("trace", "#trace <ltsname> | <tracesname>[i]");
     }
-    let lts = lookup_lts(name, ns)?;
+    // A `name[i]` handle selects one trace from a `#traces` set.
+    if parse_index(arg).is_some() {
+        let t = resolve_trace(arg, ns)?;
+        return Ok(vec![render_trace(&t, ns.aliases(), ns.repr())]);
+    }
+    let lts = lookup_lts(arg, ns)?;
     // Follow the first outgoing transition from each state until a terminal
     // state or a repeat (guarding against cycles), bounded for safety.
     let mut run: Vec<(Name, usize)> = Vec::new();
@@ -400,6 +409,109 @@ fn dir_trace(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellErro
         ns.aliases(),
         ns.repr(),
     )])
+}
+
+/// `#traces <procname|inline DSL> [bound=N] -> name` — the trace-set.
+fn dir_traces(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
+    let (pre, bind) = split_arrow(rest);
+    let opts = Opts::parse(pre);
+    let target = opts.target.trim();
+    if target.is_empty() {
+        return arity_err("traces", "#traces <procname|DSL> [bound=N] -> name");
+    }
+    let proc = resolve_proc(target, ns)?;
+    let bound = opts.bound.unwrap_or(DEFAULT_BOUND);
+    let (ts, truncated) = traces(&proc, bound, bound);
+    let bundle = render_traces(&ts, truncated, ns.aliases(), ns.repr());
+    if let Some(name) = bind {
+        ns.insert(
+            name,
+            Obj::Traces {
+                traces: ts,
+                truncated,
+            },
+        );
+    }
+    Ok(vec![bundle])
+}
+
+/// `#lin <tracesname>[i]` — the linearizations of one trace, as label words.
+fn dir_lin(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
+    let t = resolve_trace(rest.trim(), ns)?;
+    let lins: Vec<Vec<EventKey>> = t.linearizations().collect();
+    let mut plain = format!("{} linearization(s):\n", lins.len());
+    for (i, lin) in lins.iter().enumerate() {
+        let word: Vec<String> = lin.iter().map(|e| fold_channel(&e.channel, ns)).collect();
+        plain.push_str(&format!("  [{i}]  {}\n", word.join(" · ")));
+    }
+    Ok(vec![MimeBundle::plain(plain)])
+}
+
+/// `#project <tracesname>[i] <channel[,channel]>` — one agent's view of a trace:
+/// the events on the named channels, under the induced causal order.
+fn dir_project(rest: &str, ns: &mut Namespace) -> Result<Vec<MimeBundle>, CellError> {
+    let (spec, chans) = rest.trim().split_once(char::is_whitespace).ok_or_else(|| {
+        CellError::new(
+            "DirectiveError",
+            "usage: #project <tracesname>[i] <channel[,channel]>",
+        )
+    })?;
+    let t = resolve_trace(spec.trim(), ns)?;
+    let names = resolve_names(&split_list(chans), ns)?;
+    let projected = t.project(|e| names.iter().any(|n| name_equiv(&e.channel, n)));
+    Ok(vec![render_trace(&projected, ns.aliases(), ns.repr())])
+}
+
+/// Fold a channel to its source alias for a listing, else its compact form.
+fn fold_channel(name: &Name, ns: &Namespace) -> String {
+    ns.aliases()
+        .get(name)
+        .map_or_else(|| format_name(name), str::to_string)
+}
+
+/// Parse a `name[i]` handle into `(name, i)`, or `None` if it is not one.
+fn parse_index(spec: &str) -> Option<(&str, usize)> {
+    let open = spec.find('[')?;
+    let close = spec.find(']')?;
+    if close != spec.len() - 1 || close < open {
+        return None;
+    }
+    let name = spec[..open].trim();
+    if !is_ident(name) {
+        return None;
+    }
+    let idx: usize = spec[open + 1..close].trim().parse().ok()?;
+    Some((name, idx))
+}
+
+/// Resolve a `name[i]` handle to the `i`-th trace of a `#traces` binding.
+fn resolve_trace(spec: &str, ns: &Namespace) -> Result<Trace, CellError> {
+    let spec = spec.trim();
+    let (name, idx) = parse_index(spec).ok_or_else(|| {
+        CellError::new(
+            "TraceError",
+            format!("expected a trace handle `name[i]`, got `{spec}`"),
+        )
+    })?;
+    match ns.get(name) {
+        Some(Obj::Traces { traces, .. }) => traces.get(idx).cloned().ok_or_else(|| {
+            CellError::new(
+                "IndexError",
+                format!(
+                    "`{name}` has {} trace(s); index {idx} is out of range",
+                    traces.len()
+                ),
+            )
+        }),
+        Some(other) => Err(CellError::new(
+            "NameError",
+            format!("`{name}` is a {}, not a trace-set", other.kind()),
+        )),
+        None => Err(CellError::new(
+            "NameError",
+            format!("no trace-set named `{name}` (bind one with `#traces ... -> {name}`)"),
+        )),
+    }
 }
 
 /// `#typecheck <procname|inline DSL> [with a:Ty, b:Ty, ...]`
@@ -706,7 +818,10 @@ Stratum notebook cells:
   #counterexample <invariant> on <lts>           a run violating the invariant
   #bisim <p> <q> [weak] [obs=a,b]                barbed (bi)simulation verdict
   #step <p>                                       one-step reducts
-  #trace <lts>                                    a sample run
+  #traces <p> [bound=N] -> tr                    the trace-set (partial orders)
+  #trace <lts> | tr[i]                            a sample run, or trace tr[i]
+  #lin tr[i]                                      linearizations of trace tr[i]
+  #project tr[i] <a,b>                            one agent's view of trace tr[i]
   #typecheck <p> [with a:Ty, b:Ty]               channel-sort typecheck
   #rune <newline> <script>                       run an embedded Rune script
   #ascii / #latex                                output representation (`#repr` shows current)
