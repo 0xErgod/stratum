@@ -60,11 +60,12 @@ fn count_lifts_on(p: &Proc, chan: &Name) -> usize {
 fn bang_expand_is_the_section3_machinery() {
     // The verbatim desugaring a reviewer eyeballs: the message carries the
     // replicator `B = x(y).(x!(*y) | *y)` together with `P` (here `0`), and a
-    // co-located copy of `B` waits to consume it. `x` is minted as `@0`.
+    // co-located copy of `B` waits to consume it. `@0` is reserved, so `x` is
+    // minted as the first fresh name `ground(1) = @(@0!(0))`.
     let raw = expand(&with_stdlib("bang(0)")).unwrap();
     assert_eq!(
         raw,
-        "@0!(@0(v0).(@0!(*v0) | *v0) | 0) | @0(v1).(@0!(*v1) | *v1)",
+        "@(@0!(0))!(@(@0!(0))(v0).(@(@0!(0))!(*v0) | *v0) | 0) | @(@0!(0))(v1).(@(@0!(0))!(*v1) | *v1)",
     );
     // And it is faithful: re-parses to the same closed core term.
     assert!(parse(&raw).unwrap().is_closed());
@@ -76,7 +77,7 @@ fn bang_of_a_process_carries_that_process() {
     let raw = expand(&with_stdlib("bang( @(@0!(0))!(0) )")).unwrap();
     assert_eq!(
         raw,
-        "@0!(@0(v0).(@0!(*v0) | *v0) | @(@0!(0))!(0)) | @0(v1).(@0!(*v1) | *v1)",
+        "@(@0!(0))!(@(@0!(0))(v0).(@(@0!(0))!(*v0) | *v0) | @(@0!(0))!(0)) | @(@0!(0))(v1).(@(@0!(0))!(*v1) | *v1)",
     );
 }
 
@@ -119,12 +120,13 @@ fn bang_null_is_null_up_to_the_internal_channel() {
 
 #[test]
 fn bang_accumulates_copies_of_an_inert_process() {
-    // `s` is minted first (top-level `new`), so `s = @0` is observable and the
-    // engine's internal `x` is a *different*, later ground name. Each internal
-    // step spawns one more inert `s!(0)`, so the reachable states form a chain
-    // whose k-th node carries exactly k copies.
+    // `s` is minted first (top-level `new`), so — `@0` being reserved — `s =
+    // ground(1) = @(@0!(0))` is observable and the engine's internal `x` is a
+    // *different*, later ground name. Each internal step spawns one more inert
+    // `s!(0)`, so the reachable states form a chain whose k-th node carries
+    // exactly k copies.
     let bang_s = parse(&with_stdlib("new s\nbang( s!(0) )")).unwrap();
-    let s = quote(zero()); // @0
+    let s = quote(lift(quote(zero()), zero())); // @(@0!(0))
 
     let bound = 8;
     let lts = Lts::explore(&bang_s, bound);

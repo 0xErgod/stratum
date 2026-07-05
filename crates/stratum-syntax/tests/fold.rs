@@ -21,13 +21,17 @@ fn parse_with_aliases_matches_parse() {
 
 #[test]
 fn folds_new_names_raw_spells_them_out() {
-    // `new req, ack` → req = @0, ack = @(@0!(0)). Folded prints the source
-    // names; raw prints the ground quotes.
+    // `@0` is reserved, so `new req, ack` → req = ground(1) = @(@0!(0)),
+    // ack = ground(2) = @(@0!(@0!(0))). Folded prints the source names; raw
+    // prints the ground quotes.
     let src = "new req, ack\nreq!(0) | req(x).ack!(0)";
     let (p, aliases) = parse_with_aliases(src).unwrap();
 
     assert_eq!(to_source_folded(&p, &aliases), "req!(0) | req(v0).ack!(0)");
-    assert_eq!(to_source(&p), "@0!(0) | @0(v0).@(@0!(0))!(0)");
+    assert_eq!(
+        to_source(&p),
+        "@(@0!(0))!(0) | @(@0!(0))(v0).@(@0!(@0!(0)))!(0)"
+    );
 }
 
 #[test]
