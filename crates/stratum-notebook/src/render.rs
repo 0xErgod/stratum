@@ -369,7 +369,7 @@ pub fn render_traces(ts: &[Trace], truncated: bool, aliases: &Aliases, repr: Rep
                 })
                 .collect();
             let body = if rows.is_empty() {
-                format!(r"\text{{Traces: 0 traces {status}}}")
+                format!(r"\text{{Traces: 0 traces {}}}", escape_latex_text(status))
             } else {
                 format!(r"\begin{{array}}{{rll}}{}\end{{array}}", rows.join(r" \\ "))
             };
